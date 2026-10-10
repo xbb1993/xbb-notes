@@ -54,21 +54,28 @@ const architectSidebar = [
   ]),
 ]
 
+const mysqlSidebar = [
+  { text: '学习总览', items: [{ text: '路线图与目录', link: '/mysql/' }] },
+  // 每完成一篇笔记，在这里用 group('mysql', '模块名', ['slug', ...]) 追加一组
+]
+
 export default defineConfig({
   lang: 'zh-CN',
   title: "Engineer's Notes",
-  description: '后端技术学习笔记：Redis、系统架构师等',
+  description: '后端技术学习笔记：Redis、MySQL、系统架构师等',
   base: '/xbb-notes/',
   cleanUrls: true,
   lastUpdated: true,
   themeConfig: {
     nav: [
       { text: 'Redis', link: '/redis/' },
+      { text: 'MySQL', link: '/mysql/' },
       { text: '系统架构师', link: '/architect/' },
     ],
     sidebar: {
       '/redis/': redisSidebar,
       '/architect/': architectSidebar,
+      '/mysql/': mysqlSidebar,
     },
     search: {
       provider: 'local',

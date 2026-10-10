@@ -57,6 +57,7 @@ const architectSidebar = [
 const mysqlSidebar = [
   { text: '学习总览', items: [{ text: '路线图与目录', link: '/mysql/' }] },
   // 每完成一篇笔记，在这里用 group('mysql', '模块名', ['slug', ...]) 追加一组
+  group('mysql', '模块一 · 架构、SQL 生命周期与实验环境', ['t01-lab-env']),
 ]
 
 export default defineConfig({

@@ -1,0 +1,361 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Keep Alive 时间线</title>
+<style>
+:root{
+  --bg:#f7f7f5; --panel:#ffffff; --ink:#1f2328; --muted:#6a737d; --line:#d8dbe0;
+  --ok:#1a7f37; --warn:#b26b00; --bad:#cf222e; --pkt-c:#0969da; --pkt-b:#8250df;
+  --nat-on:#d1f0da; --nat-off:#e6e6e6; --bar:#e9ecef;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#16181d; --panel:#1f2329; --ink:#e6e8eb; --muted:#9aa3ad; --line:#353b45;
+    --ok:#3fb950; --warn:#d29922; --bad:#f85149; --pkt-c:#58a6ff; --pkt-b:#bc8cff;
+    --nat-on:#1f3d2a; --nat-off:#30343b; --bar:#2b3038;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.6 -apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:16px}
+h1{font-size:20px;margin:4px 0 2px}
+.sub{color:var(--muted);margin:0 0 12px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:12px}
+.controls{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px 16px;align-items:end}
+label{display:block;font-size:12px;color:var(--muted);margin-bottom:2px}
+select,input[type=range]{width:100%}
+select{padding:5px;border-radius:6px;border:1px solid var(--line);background:var(--panel);color:var(--ink)}
+.btns{display:flex;gap:8px;flex-wrap:wrap}
+button{padding:6px 14px;border-radius:6px;border:1px solid var(--line);background:var(--panel);color:var(--ink);cursor:pointer;font-size:14px}
+button.primary{background:var(--pkt-c);border-color:var(--pkt-c);color:#fff}
+.desc{margin-top:8px;color:var(--muted);font-size:13px}
+canvas{width:100%;height:220px;display:block}
+.stats{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+@media (max-width:640px){.stats{grid-template-columns:1fr}}
+.meter{margin:6px 0 10px}
+.meter .top{display:flex;justify-content:space-between;font-size:12px;color:var(--muted)}
+.track{position:relative;height:14px;background:var(--bar);border-radius:7px;overflow:hidden}
+.fill{position:absolute;left:0;top:0;bottom:0;width:0;background:var(--ok);transition:width .08s linear}
+.tick{position:absolute;top:-2px;bottom:-2px;width:2px;background:var(--ink);opacity:.55}
+.badge{display:inline-block;padding:1px 8px;border-radius:10px;font-size:12px;font-weight:600}
+.b-ok{background:color-mix(in srgb,var(--ok) 18%,transparent);color:var(--ok)}
+.b-bad{background:color-mix(in srgb,var(--bad) 18%,transparent);color:var(--bad)}
+.b-warn{background:color-mix(in srgb,var(--warn) 20%,transparent);color:var(--warn)}
+.log{height:210px;overflow:auto;font:12px/1.7 ui-monospace,Consolas,monospace;margin:0;padding:0;list-style:none}
+.log li{border-bottom:1px dashed var(--line);padding:1px 0}
+.log .t{color:var(--muted);display:inline-block;width:62px}
+.log .c-bad{color:var(--bad)} .log .c-ok{color:var(--ok)} .log .c-warn{color:var(--warn)}
+.legend{font-size:12px;color:var(--muted);display:flex;gap:14px;flex-wrap:wrap;margin-top:6px}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:4px;vertical-align:middle}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Keep Alive 时间线：半开连接是怎么被发现的</h1>
+  <p class="sub">MQTT 专题 7 图解 · 电表 meter3 ↔ 运营商 NAT ↔ broker。时间为模拟秒；报文单程按 1 秒画，便于观察。</p>
+
+  <div class="panel">
+    <div class="controls">
+      <div>
+        <label for="scn">场景</label>
+        <select id="scn">
+          <option value="idle">① 空闲：只靠心跳维持</option>
+          <option value="report">② 定时上报：不需要心跳</option>
+          <option value="cut">③ 信号中断：半开连接</option>
+          <option value="nat">④ Keep Alive 大于 NAT 超时</option>
+        </select>
+      </div>
+      <div>
+        <label for="ka">Keep Alive：<b id="kaV"></b> 秒（broker 判定线 = 1.5 倍 = <b id="ka15"></b> 秒）</label>
+        <input id="ka" type="range" min="4" max="40" step="1">
+      </div>
+      <div>
+        <label for="nat">运营商 NAT 空闲超时：<b id="natV"></b> 秒</label>
+        <input id="nat" type="range" min="10" max="120" step="1">
+      </div>
+      <div>
+        <label for="spd">播放速度</label>
+        <select id="spd">
+          <option value="2">慢（2 模拟秒/秒）</option>
+          <option value="4" selected>中（4 模拟秒/秒）</option>
+          <option value="8">快（8 模拟秒/秒）</option>
+        </select>
+      </div>
+      <div class="btns">
+        <button id="play" class="primary">▶ 播放</button>
+        <button id="reset">↺ 重置</button>
+      </div>
+    </div>
+    <div class="desc" id="desc"></div>
+  </div>
+
+  <div class="panel">
+    <canvas id="cv" width="940" height="220"></canvas>
+    <div class="legend">
+      <span><i class="dot" style="background:var(--pkt-c)"></i>电表发出的报文</span>
+      <span><i class="dot" style="background:var(--pkt-b)"></i>broker 发出的报文</span>
+      <span><i class="dot" style="background:var(--bad)"></i>✕ 在 NAT 处被静默丢弃</span>
+    </div>
+  </div>
+
+  <div class="stats">
+    <div class="panel">
+      <div><b>broker 视角</b> · meter3 状态 <span id="bState" class="badge b-ok">在线</span></div>
+      <div class="meter">
+        <div class="top"><span>距上次收到 meter3 的任何报文</span><span id="bTxt"></span></div>
+        <div class="track"><div class="fill" id="bFill"></div><div class="tick" style="left:66.67%"></div></div>
+        <div class="top"><span></span><span>竖线 = 1×KA；满格 = 1.5×KA → 断开并发布遗嘱</span></div>
+      </div>
+      <div><b>电表视角</b> · 连接 <span id="cState" class="badge b-ok">正常</span></div>
+      <div class="meter">
+        <div class="top"><span id="cLbl">距上次发出报文（满格 = KA，该发心跳了）</span><span id="cTxt"></span></div>
+        <div class="track"><div class="fill" id="cFill"></div></div>
+      </div>
+      <div class="top" style="font-size:12px;color:var(--muted)">NAT 映射：<span id="natState" class="badge b-ok">存在</span>　网络：<span id="netState" class="badge b-ok">通</span>　模拟时间 <b id="clock">0.0</b> 秒</div>
+    </div>
+    <div class="panel">
+      <b>事件日志</b>
+      <ul class="log" id="log"></ul>
+    </div>
+  </div>
+  <p class="desc">简化说明：本图假设客户端发出 PINGREQ 后等 1 个 Keep Alive 收不到 PINGRESP 就判定连接已死（规范只说"合理时间内"，具体由客户端库决定）；重连失败每 5 秒重试一次。broker 的判定严格按 1.5 倍画，真实 broker 可能略晚（实测 Mosquitto 晚约 2 秒）。</p>
+</div>
+
+<script>
+(function(){
+const SCN = {
+  idle:  {ka:10, nat:60, report:0, cut:null,
+          d:"电表没有业务数据要发。每隔 Keep Alive 发一次 PINGREQ，broker 回 PINGRESP。心跳同时也在给 NAT 映射“续命”。"},
+  report:{ka:10, nat:60, report:4, cut:null,
+          d:"电表每 4 秒上报一次（QoS 1）。上报本身就证明它活着，所以一个心跳都不用发——心跳只在空闲时才出现。"},
+  cut:   {ka:10, nat:60, report:0, cut:[16,52],
+          d:"第 16 秒信号中断，第 52 秒恢复。双方都没收到任何通知：电表靠“等不到 PINGRESP”发现，broker 靠“超过 1.5 倍 KA 没收到报文”发现，各自独立。恢复后电表重连，新连接接管。"},
+  nat:   {ka:30, nat:20, report:0, cut:null,
+          d:"Keep Alive（30 秒）比 NAT 空闲超时（20 秒）长：每次空闲 20 秒后 NAT 悄悄删掉映射，下一个心跳就被丢弃，形成周期性掉线重连。把 Keep Alive 拖到 NAT 超时以下再看。"}
+};
+const $ = id => document.getElementById(id);
+const cv = $("cv"), ctx = cv.getContext("2d");
+const LAT = 1.0, DT = 0.05, CONNECT_RETRY = 5;
+let P, S, playing = false, lastReal = 0, raf = 0;
+
+function css(v){ return getComputedStyle(document.documentElement).getPropertyValue(v).trim(); }
+
+function initState(){
+  S = {
+    t:0, packets:[], drops:[], log:[],
+    net:true,
+    nat:{alive:true, conn:1, last:0},
+    c:{state:"connected", conn:1, lastSent:0, ping:false, pingAt:0, nextReport:P.report>0?1:Infinity, connAt:0},
+    b:{online:true, conn:1, lastRecv:0}
+  };
+  $("log").innerHTML = "";
+  addLog("t=0 已连接：CONNECT/CONNACK 完成，Keep Alive = " + P.ka + " 秒", "ok");
+  draw(); updateUI();
+}
+function loadScenario(){
+  const s = SCN[$("scn").value];
+  P = {ka:s.ka, nat:s.nat, report:s.report, cut:s.cut};
+  $("ka").value = P.ka; $("nat").value = P.nat; $("desc").textContent = s.d;
+  syncLabels(); initState();
+}
+function syncLabels(){
+  $("kaV").textContent = P.ka; $("ka15").textContent = (P.ka*1.5).toFixed(1); $("natV").textContent = P.nat;
+}
+function addLog(msg, cls){
+  S.log.push(msg);
+  const li = document.createElement("li");
+  li.innerHTML = '<span class="t">' + S.t.toFixed(1) + 's</span><span class="c-' + (cls||"") + '"></span>';
+  li.lastChild.textContent = msg;
+  const ul = $("log"); ul.appendChild(li); ul.scrollTop = ul.scrollHeight;
+}
+function send(from, type, conn){
+  S.packets.push({from, type, conn, t0:S.t, crossed:false});
+}
+function netUp(){
+  if (!P.cut) return true;
+  return !(S.t >= P.cut[0] && S.t < P.cut[1]);
+}
+
+function step(){
+  S.t += DT;
+  // 网络状态变化
+  const up = netUp();
+  if (up !== S.net){
+    S.net = up;
+    addLog(up ? "网络恢复" : "✂ 信号中断（双方都收不到任何通知）", up ? "ok" : "bad");
+  }
+  // NAT 空闲回收
+  if (S.nat.alive && S.t - S.nat.last > P.nat){
+    S.nat.alive = false;
+    addLog("NAT 空闲超过 " + P.nat + " 秒，悄悄删除映射（双方都不知道）", "warn");
+  }
+  // 报文推进
+  for (const p of S.packets){
+    const f = (S.t - p.t0) / LAT;
+    if (!p.crossed && f >= 0.5){
+      p.crossed = true;
+      let pass;
+      if (!S.net) pass = false;
+      else if (p.type === "CONNECT"){ S.nat = {alive:true, conn:p.conn, last:S.t}; pass = true; }
+      else pass = S.nat.alive && S.nat.conn === p.conn;
+      if (pass) S.nat.last = S.t;
+      else { p.dead = true; S.drops.push({from:p.from, t:S.t, type:p.type}); addLog((p.from==="c"?"电表→":"broker→") + p.type + " 在 NAT 处被丢弃", "bad"); }
+    }
+    if (!p.dead && f >= 1 && !p.done){ p.done = true; deliver(p); }
+  }
+  S.packets = S.packets.filter(p => !p.done && !(p.dead && S.t - p.t0 > LAT));
+  S.drops = S.drops.filter(d => S.t - d.t < 1.5);
+
+  // 电表逻辑
+  const c = S.c;
+  if (c.state === "connected"){
+    if (S.t >= c.nextReport){ send("c","PUBLISH",c.conn); c.lastSent = S.t; c.nextReport += P.report; }
+    if (!c.ping && S.t - c.lastSent >= P.ka){
+      send("c","PINGREQ",c.conn); c.ping = true; c.pingAt = S.t; c.lastSent = S.t;
+      addLog("电表：空闲 " + P.ka + " 秒，发 PINGREQ");
+    }
+    if (c.ping && S.t - c.pingAt >= P.ka){
+      addLog("电表：等不到 PINGRESP，判定连接已死 → 重连", "warn");
+      reconnect();
+    }
+  } else if (c.state === "connecting"){
+    if (S.t - c.connAt >= CONNECT_RETRY){ addLog("电表：CONNECT 没有回音，重试", "warn"); reconnect(); }
+  }
+  // broker 逻辑
+  const b = S.b;
+  if (b.online && S.t - b.lastRecv > P.ka * 1.5){
+    b.online = false;
+    addLog("broker：超过 1.5×KA（" + (P.ka*1.5).toFixed(1) + " 秒）没收到报文 → 断开连接，发布遗嘱 offline", "bad");
+  }
+}
+function reconnect(){
+  const c = S.c;
+  c.conn += 1; c.state = "connecting"; c.connAt = S.t; c.ping = false;
+  send("c","CONNECT",c.conn);
+}
+function deliver(p){
+  const b = S.b, c = S.c;
+  if (p.from === "c"){
+    b.lastRecv = S.t;
+    if (p.type === "CONNECT"){
+      if (b.online && b.conn !== p.conn) addLog("broker：同一 Client ID 新连接到达 → 接管旧连接（旧的是半开的）", "warn");
+      else if (!b.online) addLog("broker：meter3 重新上线", "ok");
+      b.online = true; b.conn = p.conn;
+      send("b","CONNACK",p.conn);
+    } else if (p.type === "PINGREQ"){ send("b","PINGRESP",p.conn); }
+    else if (p.type === "PUBLISH"){ send("b","PUBACK",p.conn); }
+  } else {
+    if (p.conn !== c.conn) return;
+    if (p.type === "CONNACK"){
+      c.state = "connected"; c.lastSent = S.t; c.ping = false;
+      if (P.report > 0) c.nextReport = S.t + 1;
+      addLog("电表：收到 CONNACK，连接恢复", "ok");
+    } else if (p.type === "PINGRESP"){ c.ping = false; }
+  }
+}
+
+function draw(){
+  const W = cv.width, H = cv.height;
+  ctx.clearRect(0,0,W,H);
+  const ink = css("--ink"), muted = css("--muted"), line = css("--line");
+  const xc = 90, xb = W - 90, xn = W/2, y = 110;
+  // 链路
+  ctx.strokeStyle = line; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.moveTo(xc, y); ctx.lineTo(xb, y); ctx.stroke();
+  // 端点
+  const box = (x, label, ok) => {
+    ctx.fillStyle = css("--panel"); ctx.strokeStyle = ok ? css("--ok") : css("--bad"); ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.roundRect(x-60, y-30, 120, 60, 8); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = ink; ctx.font = "bold 14px sans-serif"; ctx.textAlign = "center"; ctx.fillText(label, x, y+5);
+  };
+  box(xc, "电表 meter3", S.c.state === "connected");
+  box(xb, "broker", S.b.online);
+  // NAT
+  ctx.fillStyle = S.nat.alive ? css("--nat-on") : css("--nat-off");
+  ctx.strokeStyle = line; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.roundRect(xn-42, y-22, 84, 44, 6); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = ink; ctx.font = "12px sans-serif"; ctx.textAlign = "center";
+  ctx.fillText("运营商 NAT", xn, y-4);
+  ctx.fillStyle = muted; ctx.fillText(S.nat.alive ? ("映射空闲 " + (S.t - S.nat.last).toFixed(0) + "s") : "映射已删除", xn, y+13);
+  if (!S.net){ ctx.fillStyle = css("--bad"); ctx.font = "bold 22px sans-serif"; ctx.fillText("✂", (xc+xn)/2, y-12); ctx.font="12px sans-serif"; ctx.fillText("信号中断", (xc+xn)/2, y+24); }
+  // 报文
+  for (const p of S.packets){
+    const f = Math.min((S.t - p.t0)/LAT, p.dead ? 0.5 : 1);
+    const x = p.from === "c" ? xc+60 + (xb-60-(xc+60))*f : xb-60 - (xb-60-(xc+60))*f;
+    const yy = p.from === "c" ? y-42 : y+42;
+    ctx.fillStyle = p.from === "c" ? css("--pkt-c") : css("--pkt-b");
+    ctx.beginPath(); ctx.arc(x, yy, 7, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = ink; ctx.font = "11px sans-serif"; ctx.textAlign = "center";
+    ctx.fillText(p.type, x, p.from === "c" ? yy-12 : yy+20);
+  }
+  for (const d of S.drops){
+    const yy = d.from === "c" ? y-42 : y+42;
+    ctx.strokeStyle = css("--bad"); ctx.lineWidth = 3; const s = 8;
+    ctx.beginPath(); ctx.moveTo(xn-s, yy-s); ctx.lineTo(xn+s, yy+s); ctx.moveTo(xn+s, yy-s); ctx.lineTo(xn-s, yy+s); ctx.stroke();
+  }
+  ctx.fillStyle = muted; ctx.font = "12px sans-serif"; ctx.textAlign = "left";
+  ctx.fillText("上行（电表→broker）", 10, 20); ctx.fillText("下行（broker→电表）", 10, H-10);
+}
+function setBadge(el, text, cls){ el.textContent = text; el.className = "badge " + cls; }
+function updateUI(){
+  const b = S.b, c = S.c, th = P.ka*1.5;
+  const since = S.t - b.lastRecv;
+  const bf = $("bFill");
+  if (b.online){
+    bf.style.width = Math.min(100, since/th*100) + "%";
+    bf.style.background = since > P.ka ? css("--warn") : css("--ok");
+    $("bTxt").textContent = since.toFixed(1) + " / " + th.toFixed(1) + " 秒";
+  } else { bf.style.width = "100%"; bf.style.background = css("--bad"); $("bTxt").textContent = "已判定离线"; }
+  setBadge($("bState"), b.online ? "在线" : "离线（已发遗嘱）", b.online ? "b-ok" : "b-bad");
+  const cf = $("cFill");
+  if (c.state === "connected" && c.ping){
+    $("cLbl").textContent = "已发 PINGREQ，等待 PINGRESP（满格 = 放弃并重连）";
+    const w = S.t - c.pingAt; cf.style.width = Math.min(100, w/P.ka*100) + "%"; cf.style.background = css("--warn");
+    $("cTxt").textContent = w.toFixed(1) + " / " + P.ka + " 秒";
+  } else if (c.state === "connected"){
+    $("cLbl").textContent = "距上次发出报文（满格 = KA，该发心跳了）";
+    const w = S.t - c.lastSent; cf.style.width = Math.min(100, w/P.ka*100) + "%"; cf.style.background = css("--ok");
+    $("cTxt").textContent = w.toFixed(1) + " / " + P.ka + " 秒";
+  } else {
+    $("cLbl").textContent = "重连中：等待 CONNACK"; const w = S.t - c.connAt;
+    cf.style.width = Math.min(100, w/CONNECT_RETRY*100) + "%"; cf.style.background = css("--bad");
+    $("cTxt").textContent = w.toFixed(1) + " / " + CONNECT_RETRY + " 秒";
+  }
+  const cs = c.state === "connected" ? (c.ping ? ["等待心跳回应","b-warn"] : ["正常","b-ok"]) : ["重连中","b-bad"];
+  setBadge($("cState"), cs[0], cs[1]);
+  setBadge($("natState"), S.nat.alive ? "存在" : "已删除", S.nat.alive ? "b-ok" : "b-bad");
+  setBadge($("netState"), S.net ? "通" : "中断", S.net ? "b-ok" : "b-bad");
+  $("clock").textContent = S.t.toFixed(1);
+}
+function frame(ts){
+  if (!playing) return;
+  const dtReal = Math.min(0.1, (ts - lastReal)/1000); lastReal = ts;
+  let simAdv = dtReal * Number($("spd").value);
+  while (simAdv > 0){ step(); simAdv -= DT; }
+  draw(); updateUI();
+  if (S.t > 180){ playing = false; $("play").textContent = "▶ 播放"; addLog("演示结束（180 秒），点重置再看一遍"); return; }
+  raf = requestAnimationFrame(frame);
+}
+$("play").onclick = () => {
+  playing = !playing; $("play").textContent = playing ? "⏸ 暂停" : "▶ 播放";
+  if (playing){ lastReal = performance.now(); raf = requestAnimationFrame(frame); }
+};
+$("reset").onclick = () => { playing = false; $("play").textContent = "▶ 播放"; initState(); };
+$("scn").onchange = () => { playing = false; $("play").textContent = "▶ 播放"; loadScenario(); };
+$("ka").oninput = () => { P.ka = Number($("ka").value); syncLabels(); };
+$("nat").oninput = () => { P.nat = Number($("nat").value); syncLabels(); };
+$("ka").onchange = $("nat").onchange = () => { playing = false; $("play").textContent = "▶ 播放"; initState(); };
+function fit(){ const r = cv.getBoundingClientRect(); cv.width = Math.max(320, Math.round(r.width)); draw(); }
+window.addEventListener("resize", () => { if (S) fit(); });
+if (!CanvasRenderingContext2D.prototype.roundRect){
+  CanvasRenderingContext2D.prototype.roundRect = function(x,y,w,h){ this.rect(x,y,w,h); };
+}
+loadScenario(); fit();
+// 供测试：快进
+window.__sim = { run(sec){ const n = Math.round(sec/DT); for (let i=0;i<n;i++) step(); draw(); updateUI(); return S.log.slice(); }, load(v){ $("scn").value=v; loadScenario(); } };
+})();
+</script>
+</body>
+</html>

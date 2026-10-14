@@ -64,7 +64,8 @@ const mqttSidebar = [
   { text: '学习总览', items: [{ text: '路线图与目录', link: '/mqtt/' }] },
   // 每完成一篇笔记，在这里用 group('mqtt', '模块名', ['slug', ...]) 追加一组
   group('mqtt', '模块一 · 全景、通识与实验环境', ['t01-iot-constraints', 't02-messaging-basics', 't03-protocol-vs-impl', 't04-lab-env']),
-  group('mqtt', '模块二 · 协议基础', ['t05-packet-structure', 't06-connect', 't07-keepalive']),
+  group('mqtt', '模块二 · 协议基础', ['t05-packet-structure', 't06-connect', 't07-keepalive', 't08-topics']),
+  group('mqtt', '模块三 · 可靠性语义', ['t10-qos01', 't11-qos2']),
 ]
 
 export default defineConfig({

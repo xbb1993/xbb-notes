@@ -1,0 +1,343 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QoS 2 状态机</title>
+<style>
+:root{
+  --bg:#f7f7f5; --panel:#fff; --ink:#1f2328; --muted:#6a737d; --line:#d8dbe0;
+  --ok:#1a7f37; --warn:#b26b00; --bad:#cf222e; --c1:#0969da; --c2:#8250df; --c3:#1a7f37;
+  --okbg:#dafbe1; --warnbg:#fff1d6; --badbg:#ffebe9; --hl:#eef4ff;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#16181d; --panel:#1f2329; --ink:#e6e8eb; --muted:#9aa3ad; --line:#353b45;
+    --ok:#3fb950; --warn:#d29922; --bad:#f85149; --c1:#58a6ff; --c2:#bc8cff; --c3:#3fb950;
+    --okbg:#12301c; --warnbg:#3a2c0d; --badbg:#3d1618; --hl:#1d2a3d;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.6 -apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1080px;margin:0 auto;padding:16px}
+h1{font-size:20px;margin:4px 0 2px} h2{font-size:16px;margin:0 0 8px}
+.sub{color:var(--muted);margin:0 0 12px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:12px}
+.controls{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px 16px;align-items:end}
+label{display:block;font-size:12px;color:var(--muted);margin-bottom:2px}
+select{width:100%;padding:6px;border-radius:6px;border:1px solid var(--line);background:var(--panel);color:var(--ink);font-size:14px}
+.btns{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+button{padding:6px 14px;border-radius:6px;border:1px solid var(--line);background:var(--panel);color:var(--ink);cursor:pointer;font-size:14px}
+button.primary{background:var(--c1);border-color:var(--c1);color:#fff}
+button:disabled{opacity:.45;cursor:default}
+.main{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(0,1fr);gap:12px}
+@media (max-width:820px){.main{grid-template-columns:1fr}}
+.seq{max-height:560px;overflow:auto;border:1px solid var(--line);border-radius:8px}
+svg text{font-family:inherit}
+.state{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px}
+.card{border:1px solid var(--line);border-radius:8px;padding:8px}
+.card h3{margin:0 0 4px;font-size:13px}
+.kv{display:flex;justify-content:space-between;font-size:13px;gap:6px}
+.kv b{font-weight:600}
+.tag{display:inline-block;padding:0 7px;border-radius:9px;font-size:12px;font-weight:600}
+.t-ok{background:var(--okbg);color:var(--ok)} .t-bad{background:var(--badbg);color:var(--bad)} .t-warn{background:var(--warnbg);color:var(--warn)} .t-mute{color:var(--muted);border:1px solid var(--line)}
+.explain{min-height:72px;background:var(--hl);border-radius:8px;padding:8px 10px;font-size:14px}
+.outcome{margin-top:10px;font-size:15px;font-weight:600}
+.matrix{width:100%;border-collapse:collapse;font-size:13px}
+.matrix th,.matrix td{border:1px solid var(--line);padding:5px 6px;text-align:center}
+.matrix th{background:var(--hl);font-weight:600}
+.matrix td.f{text-align:left;white-space:nowrap}
+.matrix td.c{cursor:pointer}
+.matrix td.c:hover{outline:2px solid var(--c1);outline-offset:-2px}
+.matrix td.sel{outline:3px solid var(--c1);outline-offset:-3px}
+.o-once{background:var(--okbg);color:var(--ok)} .o-dup{background:var(--badbg);color:var(--bad)} .o-lost{background:var(--warnbg);color:var(--warn)} .o-rej{color:var(--muted)}
+.scroll-x{overflow-x:auto}
+.note{color:var(--muted);font-size:12px;margin:6px 0 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>QoS 2 状态机：每一种故障分支</h1>
+  <p class="sub">MQTT 专题 11 图解 · 一跳：电表（发送方）→ broker（接收方）→ 转发给订阅者。选择故障点、重连方式和 broker 转发时机，逐步观察两端状态。下方矩阵列出全部组合的结果，点击任一格可直接载入。</p>
+
+  <div class="panel">
+    <div class="controls">
+      <div>
+        <label for="fault">故障发生在哪</label>
+        <select id="fault">
+          <option value="none">无故障（正常流程）</option>
+          <option value="pub_lost">① PUBLISH 在路上丢失（broker 没收到）</option>
+          <option value="reject">① broker 收到但处理失败（PUBREC 带失败原因码）</option>
+          <option value="crash">① broker 收到并登记后崩溃（状态未持久化）</option>
+          <option value="rec_lost">② broker 已登记，PUBREC 丢失</option>
+          <option value="rel_lost">③ PUBREL 丢失</option>
+          <option value="comp_lost">④ PUBCOMP 丢失</option>
+        </select>
+      </div>
+      <div>
+        <label for="rc">断线后怎么重连</label>
+        <select id="rc">
+          <option value="keep">会话保留（Clean Start=0），按规范补发</option>
+          <option value="resend">会话丢弃（Clean Start=1），应用把未完成的消息当新消息重发</option>
+          <option value="abandon">会话丢弃（Clean Start=1），放弃未完成的消息</option>
+        </select>
+      </div>
+      <div>
+        <label for="method">broker 何时转发给订阅者</label>
+        <select id="method">
+          <option value="A">做法 A：收到 PUBREL 才转发（Mosquitto 实测）</option>
+          <option value="B">做法 B：收到 PUBLISH 立即转发</option>
+        </select>
+      </div>
+    </div>
+    <div class="btns">
+      <button id="prev">◀ 上一步</button>
+      <button id="next" class="primary">下一步 ▶</button>
+      <button id="auto">⏵ 自动播放</button>
+      <button id="all">全部展开</button>
+      <button id="reset">↺ 重置</button>
+      <span id="stepNo" style="align-self:center;color:var(--muted);font-size:13px"></span>
+    </div>
+  </div>
+
+  <div class="main">
+    <div class="panel">
+      <h2>时序图</h2>
+      <div class="seq" id="seqBox"><svg id="seq" width="100%"></svg></div>
+    </div>
+    <div class="panel">
+      <h2>两端状态</h2>
+      <div class="state">
+        <div class="card">
+          <h3 style="color:var(--c1)">电表（发送方）</h3>
+          <div class="kv"><span>消息副本</span><b id="sCopy"></b></div>
+          <div class="kv"><span>包 ID 状态</span><b id="sSt"></b></div>
+          <div class="kv"><span>还可能重发</span><b id="sCan"></b></div>
+        </div>
+        <div class="card">
+          <h3 style="color:var(--c2)">broker（接收方）</h3>
+          <div class="kv"><span>登记的包 ID</span><b id="rRec"></b></div>
+          <div class="kv"><span>暂存的消息</span><b id="rMsg"></b></div>
+          <div class="kv"><span>会话</span><b id="rSess"></b></div>
+        </div>
+      </div>
+      <div class="card" style="margin-bottom:10px">
+        <h3 style="color:var(--c3)">订阅者（告警服务）</h3>
+        <div class="kv"><span>收到 alarm-A 的次数</span><b id="uCnt"></b></div>
+      </div>
+      <div class="explain" id="explain"></div>
+      <div class="outcome" id="outcome"></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>全部分支结果一览</h2>
+    <div class="scroll-x"><table class="matrix" id="matrix"></table></div>
+    <p class="note">结果按"订阅者收到几次"判定：1 次 = 恰好一次，2 次 = 重复，0 次 = 丢失。每次只注入一个故障。会话丢弃时，broker 会清掉 7 号的登记；做法 A 下暂存但尚未转发的消息也随之丢弃。"应用把未完成的消息当新消息重发"指客户端库或业务代码在没收到"完成"通知时自行重发；收到 PUBREC 后协议层已删除副本，这种重发只能来自应用层自己保留的数据。broker 崩溃时即使选了"会话保留"，Session Present 也会是 0，此时按规范客户端必须丢弃本地会话状态，本图按"放弃"处理。本图只演示一跳；第 2 跳（broker → 订阅者）是对称的另一次四步握手。</p>
+  </div>
+</div>
+
+<script>
+(function(){
+const $ = id => document.getElementById(id);
+const FAULTS = [
+  ["none","无故障"],["pub_lost","① PUBLISH 丢失"],["reject","① broker 拒绝"],["crash","① broker 登记后崩溃"],
+  ["rec_lost","② PUBREC 丢失"],["rel_lost","③ PUBREL 丢失"],["comp_lost","④ PUBCOMP 丢失"]
+];
+const RCS = [["keep","会话保留"],["resend","丢会话·重发"],["abandon","丢会话·放弃"]];
+
+function simulate(fault, rc, method){
+  const steps = [];
+  let s = {copy:false, st:"idle", id:null};
+  let r = {rec:null, msg:false, sess:true};
+  let sub = 0, brokerLost = false, rejected = false;
+  const snap = () => ({s:{...s}, r:{...r}, sub});
+  const msg = (from, to, label, lost, text, cls) => steps.push({type:"msg", from, to, label, lost:!!lost, text, cls, snap:snap()});
+  const ev = (text, cls) => steps.push({type:"ev", text, cls, snap:snap()});
+  const deliver = why => { sub++; msg("B","U","PUBLISH → 订阅者", false, why + `。订阅者第 ${sub} 次收到 alarm-A` + (sub > 1 ? "（重复！）" : ""), sub > 1 ? "bad" : "ok"); };
+
+  function flow(stage, id, dup, allowFault){
+    if (stage === "publish"){
+      if (allowFault && fault === "pub_lost"){ msg("M","B",`PUBLISH(${id})`, true, "PUBLISH 在路上丢失：broker 什么都不知道，电表还拿着副本、等 PUBREC。", "bad"); return "cut"; }
+      msg("M","B",`PUBLISH(${id}${dup?", DUP=1":""})`, false, dup ? `电表补发 PUBLISH(${id})，DUP=1。` : `broker 收到 PUBLISH(${id})。`);
+      if (allowFault && fault === "reject"){
+        msg("B","M",`PUBREC(${id}, 0x87)`, false, "broker 处理失败（例如无权发布到这个主题），不登记、不转发，回带失败原因码（≥0x80）的 PUBREC。", "warn");
+        s = {copy:false, st:"idle", id:null}; rejected = true;
+        ev("电表收到失败的 PUBREC：按 5.0 规范流程到此结束，不发 PUBREL，包 ID 释放。消息没有投递，但电表明确知道失败原因，可由应用决定是否告警或修正后重发。", "warn");
+        return "rejected";
+      }
+      if (r.rec === id){
+        ev(`broker 认出 ${id} 号已经登记过：不再转发，只回 PUBREC。这就是 QoS 2 去重的地方。`, "ok");
+      } else {
+        r.rec = id; r.msg = (method === "A");
+        ev(method === "A" ? `broker 登记 ${id} 号，并暂存整条消息（做法 A：等 PUBREL 再转发）。` : `broker 登记 ${id} 号。`);
+        if (method === "B") deliver("做法 B：broker 收到 PUBLISH 立即转发");
+      }
+      if (allowFault && fault === "crash"){
+        brokerLost = true;
+        const had = r.msg;
+        r = {rec:null, msg:false, sess:false};
+        ev("💥 broker 崩溃重启，会话状态没有持久化：" + (had ? "7 号登记和暂存的消息（还没转发！）全部丢失。" : "7 号登记丢失（消息已经转发出去了）。"), "bad");
+        return "cut";
+      }
+      if (allowFault && fault === "rec_lost"){ msg("B","M",`PUBREC(${id})`, true, "PUBREC 丢失：broker 已登记，电表却不知道，还拿着副本。", "bad"); return "cut"; }
+      s.copy = false; s.st = "wait_comp";
+      msg("B","M",`PUBREC(${id})`, false, `电表收到 PUBREC：删除消息副本，从此不再发 PUBLISH(${id})。现在只等 PUBCOMP。`);
+    }
+    if (allowFault && fault === "rel_lost"){ msg("M","B",`PUBREL(${id})`, true, "PUBREL 丢失：broker 还留着登记" + (r.msg ? "和暂存的消息" : "") + "，电表在等 PUBCOMP。", "bad"); return "cut"; }
+    msg("M","B",`PUBREL(${id})`, false, `电表发出 PUBREL(${id})：承诺不再发 PUBLISH(${id})，broker 可以删登记了。`);
+    if (r.rec === id){
+      if (r.msg) deliver("做法 A：收到 PUBREL 才转发");
+      r.rec = null; r.msg = false;
+      ev(`broker 删除 ${id} 号登记。`);
+    } else {
+      ev(`broker 没有 ${id} 号的登记（之前已经删过），照样回 PUBCOMP。`);
+    }
+    if (allowFault && fault === "comp_lost"){ msg("B","M",`PUBCOMP(${id})`, true, "PUBCOMP 丢失：broker 已经删了登记，电表还占着包 ID 在等。", "bad"); return "cut"; }
+    msg("B","M",`PUBCOMP(${id})`, false, `电表收到 PUBCOMP：包 ID ${id} 释放，可以给下一条消息用了。流程结束。`, "ok");
+    s = {copy:false, st:"idle", id:null};
+    return "done";
+  }
+
+  s = {copy:true, st:"wait_rec", id:7};
+  ev("电表要发告警 alarm-A：分配包 ID 7，保留消息副本，等 PUBREC。");
+  const res = flow("publish", 7, false, true);
+  if (res === "cut"){
+    ev(fault === "crash" ? "✂ broker 重启，连接断开；电表重连。" : "✂ 连接断开（例如靠 Keep Alive 发现半开连接，专题 7）；电表重连。", "bad");
+    let eff = rc;
+    if (rc === "keep" && !brokerLost){
+      ev("重连：Clean Start=0，Session Present=1，双方会话都在。", "ok");
+      if (s.st === "wait_rec"){ ev("电表还没收到 PUBREC → 按原包 ID 补发 PUBLISH（DUP=1）。"); flow("publish", 7, true, false); }
+      else if (s.st === "wait_comp"){ ev("电表已经收到过 PUBREC → 不再发 PUBLISH，只补发 PUBREL。"); flow("pubrel", 7, false, false); }
+    } else {
+      if (rc === "keep"){ eff = "abandon"; ev("重连：电表请求保留会话，但 broker 重启后已无会话，Session Present=0。按规范电表也必须丢弃本地会话状态，未完成的消息随之放弃。", "warn"); }
+      else ev("重连：Clean Start=1，双方丢弃会话。", "warn");
+      if (r.rec !== null){ ev("broker 丢弃会话里的 7 号登记" + (r.msg ? "和暂存的消息——做法 A 下它还没转发，就此丢失。" : "。"), r.msg ? "bad" : "warn"); }
+      r = {rec:null, msg:false, sess:true};
+      if (eff === "resend" && s.st !== "idle"){
+        ev("应用没等到“完成”，把 alarm-A 当新消息重发，新包 ID 1。（收到 PUBREC 后协议层已删副本，这份数据来自应用层自己保留的。）", "warn");
+        s = {copy:true, st:"wait_rec", id:1};
+        flow("publish", 1, false, false);
+      } else if (s.st !== "idle"){
+        ev("电表放弃未完成的消息，包 ID 释放。", "warn");
+        s = {copy:false, st:"idle", id:null};
+      }
+    }
+  }
+  let outcome;
+  if (rejected) outcome = "rej";
+  else if (sub === 0) outcome = "lost";
+  else if (sub === 1) outcome = "once";
+  else outcome = "dup";
+  steps.push({type:"end", outcome, snap:snap()});
+  return {steps, outcome, sub};
+}
+
+const OUT = {
+  once:["恰好一次","o-once","✔ 结果：订阅者恰好收到 1 次"],
+  dup:["重复","o-dup","✘ 结果：订阅者收到 2 次——重复"],
+  lost:["丢失","o-lost","✘ 结果：订阅者 0 次——消息丢失"],
+  rej:["被拒绝","o-rej","■ 结果：broker 拒绝，未投递（电表知道原因）"]
+};
+
+let cur = null, idx = 0, timer = null;
+function load(){
+  stopAuto();
+  cur = simulate($("fault").value, $("rc").value, $("method").value);
+  idx = 1; render(); markMatrix();
+}
+function stopAuto(){ if (timer){ clearInterval(timer); timer = null; $("auto").textContent = "⏵ 自动播放"; } }
+
+const LANE = {M:90, B:300, U:470};
+function render(){
+  const steps = cur.steps.slice(0, idx);
+  const svg = $("seq");
+  const W = 560, rowH = 40, top = 50;
+  const H = top + steps.length * rowH + 30;
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`); svg.setAttribute("height", H);
+  const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+  let g = "";
+  const head = (x, t, c) => `<rect x="${x-58}" y="8" width="116" height="28" rx="6" fill="none" stroke="${c}" stroke-width="2"/><text x="${x}" y="27" text-anchor="middle" font-size="13" font-weight="600" fill="${c}">${t}</text><line x1="${x}" y1="36" x2="${x}" y2="${H}" stroke="${css('--line')}" stroke-dasharray="4 4"/>`;
+  g += head(LANE.M, "电表", css('--c1')) + head(LANE.B, "broker", css('--c2')) + head(LANE.U, "订阅者", css('--c3'));
+  steps.forEach((st, i) => {
+    const y = top + i*rowH + 14;
+    const last = i === steps.length - 1;
+    if (st.type === "msg"){
+      const x1 = LANE[st.from], x2 = LANE[st.to];
+      const col = st.lost ? css('--bad') : (st.to === "U" ? css('--c3') : (st.from === "M" ? css('--c1') : css('--c2')));
+      const xEnd = st.lost ? (x1 + x2)/2 : x2;
+      const dir = x2 > x1 ? 1 : -1;
+      g += `<line x1="${x1}" y1="${y}" x2="${xEnd - dir*(st.lost?0:6)}" y2="${y}" stroke="${col}" stroke-width="${last?3:2}"/>`;
+      if (!st.lost) g += `<polygon points="${x2},${y} ${x2-dir*9},${y-5} ${x2-dir*9},${y+5}" fill="${col}"/>`;
+      else g += `<g stroke="${col}" stroke-width="3"><line x1="${xEnd-7}" y1="${y-7}" x2="${xEnd+7}" y2="${y+7}"/><line x1="${xEnd+7}" y1="${y-7}" x2="${xEnd-7}" y2="${y+7}"/></g>`;
+      const lx = (x1 + x2)/2;
+      g += `<text x="${lx}" y="${y-6}" text-anchor="middle" font-size="12" fill="${col}" font-weight="${last?700:500}">${st.label}${st.lost?"  丢失":""}</text>`;
+    } else if (st.type === "ev"){
+      const col = st.cls === "bad" ? css('--bad') : st.cls === "warn" ? css('--warn') : st.cls === "ok" ? css('--ok') : css('--muted');
+      const short = st.text.length > 40 ? st.text.slice(0, 40) + "…" : st.text;
+      g += `<text x="12" y="${y+4}" font-size="11.5" fill="${col}" font-weight="${last?700:400}">• ${escapeHtml(short)}</text>`;
+    } else {
+      const o = OUT[st.outcome];
+      const col = st.outcome === "once" ? css('--ok') : st.outcome === "dup" ? css('--bad') : st.outcome === "lost" ? css('--warn') : css('--muted');
+      g += `<text x="${W/2}" y="${y+6}" text-anchor="middle" font-size="14" font-weight="700" fill="${col}">${o[2]}</text>`;
+    }
+  });
+  svg.innerHTML = g;
+  const box = $("seqBox"); box.scrollTop = box.scrollHeight;
+
+  const st = cur.steps[idx-1], sn = st.snap;
+  const stName = {idle:'<span class="tag t-mute">空闲/已释放</span>', wait_rec:'<span class="tag t-warn">等 PUBREC</span>', wait_comp:'<span class="tag t-warn">等 PUBCOMP</span>'};
+  $("sCopy").innerHTML = sn.s.copy ? '<span class="tag t-ok">持有</span>' : '<span class="tag t-mute">无</span>';
+  $("sSt").innerHTML = (sn.s.id !== null ? sn.s.id + " 号 " : "") + stName[sn.s.st];
+  $("sCan").innerHTML = sn.s.st === "wait_rec" ? "PUBLISH(DUP)" : sn.s.st === "wait_comp" ? "只有 PUBREL" : "—";
+  $("rRec").innerHTML = sn.r.rec !== null ? `<span class="tag t-warn">${sn.r.rec} 号</span>` : '<span class="tag t-mute">无</span>';
+  $("rMsg").innerHTML = sn.r.msg ? '<span class="tag t-warn">有（待转发）</span>' : '<span class="tag t-mute">无</span>';
+  $("rSess").innerHTML = sn.r.sess ? '<span class="tag t-ok">在</span>' : '<span class="tag t-bad">已丢失</span>';
+  $("uCnt").innerHTML = `<span class="tag ${sn.sub>1?'t-bad':sn.sub===1?'t-ok':'t-mute'}">${sn.sub}</span>`;
+  $("explain").textContent = st.type === "end" ? "流程结束。可以换一个故障点或重连方式，或点击下方矩阵中的格子对比。" : st.text;
+  $("outcome").innerHTML = st.type === "end" ? `<span class="tag ${OUT[st.outcome][1]}" style="font-size:14px;padding:2px 10px">${OUT[st.outcome][2]}</span>` : "";
+  $("stepNo").textContent = `第 ${idx} / ${cur.steps.length} 步`;
+  $("prev").disabled = idx <= 1; $("next").disabled = idx >= cur.steps.length;
+}
+function escapeHtml(t){ return t.replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
+
+function buildMatrix(){
+  let h = "<tr><th rowspan='2'>故障点</th><th colspan='3'>做法 A（PUBREL 后转发）</th><th colspan='3'>做法 B（PUBLISH 后转发）</th></tr><tr>";
+  for (const m of ["A","B"]) for (const r of RCS) h += `<th>${r[1]}</th>`;
+  h += "</tr>";
+  for (const [f, fn] of FAULTS){
+    h += `<tr><td class="f">${fn}</td>`;
+    for (const m of ["A","B"]) for (const [r] of RCS){
+      const o = simulate(f, r, m).outcome;
+      h += `<td class="c ${OUT[o][1]}" data-f="${f}" data-r="${r}" data-m="${m}">${OUT[o][0]}</td>`;
+    }
+    h += "</tr>";
+  }
+  $("matrix").innerHTML = h;
+  $("matrix").querySelectorAll("td.c").forEach(td => td.onclick = () => {
+    $("fault").value = td.dataset.f; $("rc").value = td.dataset.r; $("method").value = td.dataset.m; load();
+    window.scrollTo({top:0, behavior:"smooth"});
+  });
+}
+function markMatrix(){
+  $("matrix").querySelectorAll("td.c").forEach(td => td.classList.toggle("sel",
+    td.dataset.f === $("fault").value && td.dataset.r === $("rc").value && td.dataset.m === $("method").value));
+}
+
+$("next").onclick = () => { if (idx < cur.steps.length){ idx++; render(); } };
+$("prev").onclick = () => { stopAuto(); if (idx > 1){ idx--; render(); } };
+$("all").onclick = () => { stopAuto(); idx = cur.steps.length; render(); };
+$("reset").onclick = () => { stopAuto(); idx = 1; render(); };
+$("auto").onclick = () => {
+  if (timer){ stopAuto(); return; }
+  if (idx >= cur.steps.length) idx = 1;
+  $("auto").textContent = "⏸ 暂停";
+  timer = setInterval(() => { if (idx < cur.steps.length){ idx++; render(); } else stopAuto(); }, 1200);
+};
+["fault","rc","method"].forEach(id => $(id).onchange = load);
+buildMatrix(); load();
+window.__qos2 = { simulate };
+})();
+</script>
+</body>
+</html>

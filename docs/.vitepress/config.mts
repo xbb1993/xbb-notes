@@ -65,7 +65,10 @@ const mqttSidebar = [
   // 每完成一篇笔记，在这里用 group('mqtt', '模块名', ['slug', ...]) 追加一组
   group('mqtt', '模块一 · 全景、通识与实验环境', ['t01-iot-constraints', 't02-messaging-basics', 't03-protocol-vs-impl', 't04-lab-env']),
   group('mqtt', '模块二 · 协议基础', ['t05-packet-structure', 't06-connect', 't07-keepalive', 't08-topics']),
-  group('mqtt', '模块三 · 可靠性语义', ['t10-qos01', 't11-qos2', 't12-session', 't14-retained']),
+  group('mqtt', '模块三 · 可靠性语义', ['t10-qos01', 't11-qos2', 't12-session', 't14-retained', 't15-will']),
+  group('mqtt', '模块四 · MQTT 5.0 新特性', ['t17-reason-props', 't19-shared-sub']),
+  group('mqtt', '模块五 · 安全', ['t22-tls', 't23-authn', 't24-authz', 't25-device-identity']),
+  group('mqtt', '模块六 · Broker 内部', ['t26-broker-arch']),
 ]
 
 export default defineConfig({

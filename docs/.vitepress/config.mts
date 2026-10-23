@@ -64,13 +64,17 @@ const mqttSidebar = [
   { text: '学习总览', items: [{ text: '路线图与目录', link: '/mqtt/' }] },
   // 每完成一篇笔记，在这里用 group('mqtt', '模块名', ['slug', ...]) 追加一组
   group('mqtt', '模块一 · 全景、通识与实验环境', ['t01-iot-constraints', 't02-messaging-basics', 't03-protocol-vs-impl', 't04-lab-env']),
-  group('mqtt', '模块二 · 协议基础', ['t05-packet-structure', 't06-connect', 't07-keepalive', 't08-topics']),
-  group('mqtt', '模块三 · 可靠性语义', ['t10-qos01', 't11-qos2', 't12-session', 't14-retained', 't15-will']),
-  group('mqtt', '模块四 · MQTT 5.0 新特性', ['t17-reason-props', 't19-shared-sub']),
+  group('mqtt', '模块二 · 协议基础', ['t05-packet-structure', 't06-connect', 't07-keepalive', 't08-topics', 't09-subscribe']),
+  group('mqtt', '模块三 · 可靠性语义', ['t10-qos01', 't11-qos2', 't12-session', 't13-ordering-flow', 't14-retained', 't15-will', 't16-error-handling']),
+  group('mqtt', '模块四 · MQTT 5.0 新特性', ['t17-reason-props', 't18-expiry-alias', 't19-shared-sub', 't20-req-resp-subopts', 't21-enhanced-auth-migration']),
   group('mqtt', '模块五 · 安全', ['t22-tls', 't23-authn', 't24-authz', 't25-device-identity']),
-  group('mqtt', '模块六 · Broker 内部', ['t26-broker-arch', 't27-topic-routing', 't28-persistence-backpressure']),
-  group('mqtt', '模块七 · 集群、高可用与桥接', ['t31-cluster', 't32-access-layer']),
-  group('mqtt', '模块九 · 设备接入与工业物联网', ['t39-shadow-cmd-ota']),
+  group('mqtt', '模块六 · Broker 内部', ['t26-broker-arch', 't27-topic-routing', 't28-persistence-backpressure', 't29-broker-compare']),
+  group('mqtt', '模块七 · 集群、高可用与桥接', ['t30-distributed-basics', 't31-cluster', 't32-access-layer', 't33-bridge']),
+  group('mqtt', '模块八 · 传输与协议变体', ['t34-websocket', 't35-quic', 't36-mqtt-sn-coap']),
+  group('mqtt', '模块九 · 设备接入与工业物联网', ['t37-sparkplug', 't38-uns', 't39-shadow-cmd-ota', 't40-edge-gateway', 't41-backfill-quality']),
+  group('mqtt', '模块十 · 集成与客户端', ['t42-rule-engine', 't43-client-engineering', 't44-constrained-client', 't45-cloud-iot']),
+  group('mqtt', '模块十一 · 运维、监控与诊断', ['t46-monitoring', 't47-troubleshooting', 't48-loadtest', 't49-packet-capture']),
+  group('mqtt', '模块十二 · 架构与综合', ['t50-access-architecture', 't51-drill']),
 ]
 
 export default defineConfig({

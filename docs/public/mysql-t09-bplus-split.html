@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>B+ 树插入与页分裂</title>
+<style>
+:root{
+  --bg:#f7f7f5; --panel:#fff; --ink:#1f2328; --muted:#6a737d; --line:#d8dbe0;
+  --leaf:#eef4ff; --leafb:#0969da; --node:#f3effc; --nodeb:#8250df;
+  --new:#dafbe1; --newb:#1a7f37; --split:#fff1d6; --splitb:#b26b00; --hit:#ffebe9; --hitb:#cf222e;
+  --fill:#0969da; --fillbg:#e6e9ee;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#16181d; --panel:#1f2329; --ink:#e6e8eb; --muted:#9aa3ad; --line:#353b45;
+    --leaf:#17263b; --leafb:#58a6ff; --node:#261d3a; --nodeb:#bc8cff;
+    --new:#12301c; --newb:#3fb950; --split:#3a2c0d; --splitb:#d29922; --hit:#3d1618; --hitb:#f85149;
+    --fill:#58a6ff; --fillbg:#2b3038;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.6 -apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:16px}
+h1{font-size:20px;margin:4px 0 2px} h2{font-size:15px;margin:0 0 8px}
+.sub{color:var(--muted);margin:0 0 12px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:12px}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+button,input,select{font:inherit;padding:6px 10px;border-radius:6px;border:1px solid var(--line);background:var(--panel);color:var(--ink)}
+button{cursor:pointer} button:hover{border-color:var(--leafb)}
+button.primary{background:var(--leafb);border-color:var(--leafb);color:#fff}
+input[type=number]{width:90px}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px}
+.stat{border:1px solid var(--line);border-radius:8px;padding:6px 10px}
+.stat b{display:block;font-size:18px}
+.stat span{color:var(--muted);font-size:12px}
+#treeBox{overflow-x:auto}
+svg text{fill:var(--ink);font-size:12px;font-family:inherit}
+.legend{display:flex;flex-wrap:wrap;gap:14px;color:var(--muted);font-size:12px;margin-top:6px}
+.sw{display:inline-block;width:12px;height:12px;border-radius:3px;margin-right:4px;vertical-align:-2px;border:1px solid}
+#log{max-height:260px;overflow:auto;font-size:13px}
+#log div{padding:4px 0;border-bottom:1px dashed var(--line)}
+#log div:first-child{font-weight:600}
+.tag{display:inline-block;font-size:11px;padding:0 6px;border-radius:10px;margin-right:6px;border:1px solid}
+.t-end{color:var(--newb);border-color:var(--newb)} .t-mid{color:var(--splitb);border-color:var(--splitb)} .t-ins{color:var(--muted);border-color:var(--line)}
+.chain{font-family:ui-monospace,Consolas,monospace;font-size:12px;word-break:break-all;color:var(--muted)}
+.chain .ok{color:var(--newb)} .chain .jump{color:var(--hitb)}
+.note{color:var(--muted);font-size:12px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>B+ 树插入与页分裂</h1>
+  <p class="sub">MySQL 专题 9 配套图解。为便于观察，每页最多放 4 条记录（真实 InnoDB 中一个 16KB 叶子页可放几十到几百行）。分裂规则按 InnoDB 的思路简化：新记录插在页的末尾时，只开一个新页放新记录、原页保持满；插在中间时，对半搬移。</p>
+
+  <div class="panel">
+    <div class="row">
+      <button class="primary" id="bSeq">顺序插入 1 个（自增主键）</button>
+      <button class="primary" id="bRand">随机插入 1 个（随机主键）</button>
+      <input type="number" id="inKey" min="1" max="9999" placeholder="指定值">
+      <button id="bKey">插入指定值</button>
+      <span style="flex:1"></span>
+      <select id="selMode"><option value="seq">批量：顺序</option><option value="rand">批量：随机</option></select>
+      <button id="b20">连续插入 20 个</button>
+      <button id="bReset">重置</button>
+    </div>
+    <p class="note" style="margin:8px 0 0">建议先“重置 → 批量顺序 → 连续插入 20 个”，记下统计；再“重置 → 批量随机 → 连续插入 20 个”，对比两次的页数、填充率和叶子链的物理连续性。</p>
+  </div>
+
+  <div class="panel">
+    <div class="stats">
+      <div class="stat"><b id="sRows">0</b><span>记录数</span></div>
+      <div class="stat"><b id="sHeight">1</b><span>树高（层）</span></div>
+      <div class="stat"><b id="sLeaves">1</b><span>叶子页数</span></div>
+      <div class="stat"><b id="sFill">0%</b><span>叶子页平均填充率</span></div>
+      <div class="stat"><b id="sEnd">0</b><span>末尾分裂（不搬记录）</span></div>
+      <div class="stat"><b id="sMid">0</b><span>中间分裂（对半搬移）</span></div>
+      <div class="stat"><b id="sCont">—</b><span>叶子链物理连续比例</span></div>
+    </div>
+  </div>
+
+  <div class="panel" id="treeBox">
+    <h2>树结构</h2>
+    <svg id="svg" width="600" height="200"></svg>
+    <div class="legend">
+      <span><i class="sw" style="background:var(--node);border-color:var(--nodeb)"></i>非叶子页（记录 = 子页最小键 → 子页号）</span>
+      <span><i class="sw" style="background:var(--leaf);border-color:var(--leafb)"></i>叶子页（存数据行）</span>
+      <span><i class="sw" style="background:var(--new);border-color:var(--newb)"></i>本步新分配的页</span>
+      <span><i class="sw" style="background:var(--split);border-color:var(--splitb)"></i>本步被分裂的页</span>
+      <span><i class="sw" style="background:var(--hit);border-color:var(--hitb)"></i>本步插入的记录</span>
+      <span>页框下方细条 = 填充率；R = 根页（页号固定不变）；P1、P2… 为叶子段中的物理页号，N1、N2… 为非叶子段中的物理页号（每个索引的叶子与非叶子分属两个段，各自按分配顺序编号）</span>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>叶子链（按主键顺序，从左到右）</h2>
+    <div class="chain" id="chain"></div>
+    <p class="note">绿色箭头：下一页在叶子段中的物理页号正好 +1，范围扫描时是顺序读；红色箭头：物理上跳到别处，范围扫描变成随机读。</p>
+  </div>
+
+  <div class="panel">
+    <h2>操作日志（最新在上）</h2>
+    <div id="log"></div>
+  </div>
+</div>
+
+<script>
+const CAP = 4;                 // 每页最多记录数（叶子与非叶子相同）
+let pages, root, nextPageNo, segNo, used, lastSeq, stats, mark;
+
+function reset(){
+  pages = {}; nextPageNo = 1; segNo = {L:0, N:0}; used = new Set(); lastSeq = 0;
+  stats = {end:0, mid:0};
+  root = newPage(true, null, true);
+  mark = {newPages:new Set(), splitPages:new Set(), key:null};
+  document.getElementById('log').innerHTML = '';
+  render();
+}
+function newPage(isLeaf, parent, asRoot){
+  const seg = isLeaf ? 'L' : 'N'; const seq = ++segNo[seg];
+  const p = {no: nextPageNo++, seq, label: (isLeaf ? 'P' : 'N') + seq, leaf:isLeaf, recs:[], parent, prev:null, next:null};
+  if(asRoot){ segNo[seg]--; p.seq = 0; p.label = 'R'; }
+  pages[p.no] = p; return p;
+}
+// 非叶子记录：{key, child}；叶子记录：{key}
+function findLeaf(key, path){
+  let p = root;
+  while(!p.leaf){
+    path.push(p);
+    let i = p.recs.length - 1;
+    while(i > 0 && key < p.recs[i].key) i--;
+    p = pages[p.recs[i].child];
+  }
+  return p;
+}
+function insertKey(key){
+  if(used.has(key)) { log(`<span class="tag t-ins">跳过</span>键 ${key} 已存在`); return; }
+  used.add(key);
+  mark = {newPages:new Set(), splitPages:new Set(), key};
+  const path = [];
+  const leaf = findLeaf(key, path);
+  const msgs = [];
+  msgs.push(`从根页 ${root.label} 向下查找，定位到叶子页 ${leaf.label}`);
+  insertRec(leaf, {key}, msgs);
+  // 如果插入的是全树最小键，沿路径更新非叶子记录中的最小键
+  fixMinKeys(leaf);
+  log(`<span class="tag t-ins">插入 ${key}</span>` + msgs.join('；'));
+  render();
+}
+function insertRec(p, rec, msgs){
+  let i = 0; while(i < p.recs.length && p.recs[i].key < rec.key) i++;
+  const atEnd = (i === p.recs.length);
+  p.recs.splice(i, 0, rec);
+  if(p.recs.length <= CAP) return;
+  if(p.parent === null){
+    // 根页满：InnoDB 的做法是根页号保持不变。先把根页的全部记录挪到一个新页 c，
+    // 根页改为只含一条指向 c 的记录（树高 +1），然后再对 c 做普通分裂。
+    const c = newPage(p.leaf, p.no);
+    mark.newPages.add(c.no);
+    c.recs = p.recs;
+    if(!c.leaf) c.recs.forEach(r => pages[r.child].parent = c.no);
+    p.leaf = false;
+    p.recs = [{key: c.recs[0].key, child: c.no}];
+    msgs.push(`根页 R 已满：根页号保持不变，把它的全部记录挪到新页 ${c.label}，R 改为只指向 ${c.label}，树高 +1`);
+    splitPage(c, atEnd, msgs);
+    return;
+  }
+  splitPage(p, atEnd, msgs);
+}
+function splitPage(p, atEnd, msgs){
+  // 页满，需要分裂
+  mark.splitPages.add(p.no);
+  const np = newPage(p.leaf, p.parent);
+  mark.newPages.add(np.no);
+  let moved;
+  if(atEnd){
+    moved = p.recs.splice(p.recs.length - 1, 1);       // 只把新记录放进新页
+    stats.end++;
+    msgs.push(`<span class="tag t-end">末尾分裂</span>${p.label} 已满且新记录在页尾：分配新页 ${np.label} 只放新记录，${p.label} 保持满（${CAP}/${CAP}），不搬移已有记录`);
+  } else {
+    const half = Math.ceil(p.recs.length / 2);
+    moved = p.recs.splice(half);                           // 后一半搬到新页
+    stats.mid++;
+    msgs.push(`<span class="tag t-mid">中间分裂</span>${p.label} 已满且新记录插在中间：分配新页 ${np.label}，把后 ${moved.length} 条记录搬过去，两页各约半满`);
+  }
+  np.recs = moved;
+  if(!np.leaf) moved.forEach(r => pages[r.child].parent = np.no);
+  if(p.leaf){                                              // 维护叶子双向链表
+    np.prev = p.no; np.next = p.next;
+    if(p.next) pages[p.next].prev = np.no;
+    p.next = np.no;
+  }
+  // 向父页插入一条指向新页的记录
+  {
+    const parent = pages[p.parent];
+    np.parent = parent.no;
+    msgs.push(`向父页 ${parent.label} 插入记录（${np.recs[0].key} → ${np.label}）`);
+    insertRec(parent, {key:np.recs[0].key, child:np.no}, msgs);
+  }
+}
+function fixMinKeys(leaf){
+  let child = leaf;
+  while(child.parent !== null){
+    const par = pages[child.parent];
+    const r = par.recs.find(x => x.child === child.no);
+    if(r && r.key > child.recs[0].key) r.key = child.recs[0].key;
+    child = par;
+  }
+}
+function leavesInOrder(){
+  let p = root; while(!p.leaf) p = pages[p.recs[0].child];
+  const out = []; while(p){ out.push(p); p = p.next ? pages[p.next] : null; }
+  return out;
+}
+function height(){ let h = 1, p = root; while(!p.leaf){ h++; p = pages[p.recs[0].child]; } return h; }
+
+function render(){
+  const leaves = leavesInOrder();
+  const rows = leaves.reduce((s,p)=>s+p.recs.length,0);
+  document.getElementById('sRows').textContent = rows;
+  document.getElementById('sHeight').textContent = height();
+  document.getElementById('sLeaves').textContent = leaves.length;
+  document.getElementById('sFill').textContent = rows ? Math.round(100*rows/(leaves.length*CAP)) + '%' : '0%';
+  document.getElementById('sEnd').textContent = stats.end;
+  document.getElementById('sMid').textContent = stats.mid;
+  let cont = 0; for(let i=1;i<leaves.length;i++) if(leaves[i].seq === leaves[i-1].seq + 1) cont++;
+  document.getElementById('sCont').textContent = leaves.length > 1 ? Math.round(100*cont/(leaves.length-1)) + '%' : '—';
+  // 叶子链
+  let ch = '';
+  leaves.forEach((p,i)=>{
+    if(i>0){ const ok = p.seq === leaves[i-1].seq + 1; ch += `<span class="${ok?'ok':'jump'}"> ${ok?'→':'⇢'} </span>`; }
+    ch += `${p.label}[${p.recs.map(r=>r.key).join(',')}]`;
+  });
+  document.getElementById('chain').innerHTML = ch;
+  drawTree();
+}
+function drawTree(){
+  // 按层收集页（每层按逻辑顺序）
+  const levels = []; let cur = [root];
+  while(cur.length){
+    levels.push(cur);
+    if(cur[0].leaf) break;
+    const nxt = []; cur.forEach(p => p.recs.forEach(r => nxt.push(pages[r.child]))); cur = nxt;
+  }
+  const cellW = 34, padX = 6, boxH = 44, gapX = 14, gapY = 56;
+  const boxW = CAP*cellW + padX*2;
+  const leafCount = levels[levels.length-1].length;
+  const width = Math.max(leafCount*(boxW+gapX)+gapX, 600);
+  const height = levels.length*(boxH+gapY) + 10;
+  const pos = {};
+  // 叶子层均匀排开，上层居中于子页
+  const L = levels.length - 1;
+  levels[L].forEach((p,i)=>{ pos[p.no] = {x: gapX + i*(boxW+gapX), y: L*(boxH+gapY)+10}; });
+  for(let l=L-1;l>=0;l--){
+    levels[l].forEach(p=>{
+      const xs = p.recs.map(r=>pos[r.child].x);
+      const cx = (Math.min(...xs) + Math.max(...xs)) / 2;
+      pos[p.no] = {x: cx, y: l*(boxH+gapY)+10};
+    });
+  }
+  const css = getComputedStyle(document.documentElement);
+  const v = n => css.getPropertyValue(n).trim();
+  let s = '';
+  // 连线
+  levels.forEach(lv => lv.forEach(p => { if(!p.leaf) p.recs.forEach((r,i)=>{
+    const a = pos[p.no], b = pos[r.child];
+    s += `<line x1="${a.x+padX+i*cellW+cellW/2}" y1="${a.y+boxH-10}" x2="${b.x+boxW/2}" y2="${b.y}" stroke="${v('--line')}" stroke-width="1.5"/>`;
+  });}));
+  // 页框
+  levels.forEach(lv => lv.forEach(p => {
+    const {x,y} = pos[p.no];
+    let fill = p.leaf ? v('--leaf') : v('--node'), stroke = p.leaf ? v('--leafb') : v('--nodeb');
+    if(mark.splitPages.has(p.no)){ fill = v('--split'); stroke = v('--splitb'); }
+    if(mark.newPages.has(p.no)){ fill = v('--new'); stroke = v('--newb'); }
+    s += `<rect x="${x}" y="${y}" width="${boxW}" height="${boxH}" rx="6" fill="${fill}" stroke="${stroke}" stroke-width="1.5"/>`;
+    s += `<text x="${x+4}" y="${y-3}" style="font-size:11px;fill:${v('--muted')}">${p.label}</text>`;
+    p.recs.forEach((r,i)=>{
+      const cx = x+padX+i*cellW;
+      const hit = p.leaf && r.key === mark.key;
+      if(hit) s += `<rect x="${cx+1}" y="${y+5}" width="${cellW-2}" height="22" rx="4" fill="${v('--hit')}" stroke="${v('--hitb')}"/>`;
+      s += `<text x="${cx+cellW/2}" y="${y+21}" text-anchor="middle">${r.key}</text>`;
+    });
+    for(let i=p.recs.length;i<CAP;i++){
+      const cx = x+padX+i*cellW;
+      s += `<rect x="${cx+3}" y="${y+7}" width="${cellW-6}" height="18" rx="3" fill="none" stroke="${v('--line')}" stroke-dasharray="3 3"/>`;
+    }
+    // 填充率条
+    s += `<rect x="${x+padX}" y="${y+boxH-9}" width="${CAP*cellW}" height="4" rx="2" fill="${v('--fillbg')}"/>`;
+    s += `<rect x="${x+padX}" y="${y+boxH-9}" width="${CAP*cellW*p.recs.length/CAP}" height="4" rx="2" fill="${v('--fill')}"/>`;
+  }));
+  // 叶子链箭头
+  const lv = levels[L];
+  for(let i=1;i<lv.length;i++){
+    const a = pos[lv[i-1].no], b = pos[lv[i].no];
+    const ok = lv[i].seq === lv[i-1].seq + 1;
+    s += `<line x1="${a.x+boxW}" y1="${a.y+boxH/2}" x2="${b.x}" y2="${b.y+boxH/2}" stroke="${ok?v('--newb'):v('--hitb')}" stroke-width="2"/>`;
+  }
+  const svg = document.getElementById('svg');
+  svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+  // 尽量完整显示整棵树：超出容器时按比例缩小，最小缩到 60%，再大则横向滚动
+  const cw = document.getElementById('treeBox').clientWidth - 26;
+  const shown = Math.max(width * 0.6, Math.min(width, cw));
+  svg.setAttribute('width', shown);
+  svg.setAttribute('height', height * shown / width);
+  svg.innerHTML = s;
+}
+function log(html){
+  const d = document.createElement('div'); d.innerHTML = html;
+  const box = document.getElementById('log'); box.insertBefore(d, box.firstChild);
+}
+function randKey(){ let k; do { k = 1 + Math.floor(Math.random()*999); } while(used.has(k)); return k; }
+function seqKey(){ let k = Math.max(lastSeq, ...used, 0) + 1; lastSeq = k; return k; }
+
+document.getElementById('bSeq').onclick = () => insertKey(seqKey());
+document.getElementById('bRand').onclick = () => insertKey(randKey());
+document.getElementById('bKey').onclick = () => {
+  const k = parseInt(document.getElementById('inKey').value, 10);
+  if(k >= 1 && k <= 9999) insertKey(k);
+};
+document.getElementById('b20').onclick = () => {
+  const mode = document.getElementById('selMode').value;
+  for(let i=0;i<20;i++) insertKey(mode === 'seq' ? seqKey() : randKey());
+};
+document.getElementById('bReset').onclick = reset;
+reset();
+</script>
+</body>
+</html>

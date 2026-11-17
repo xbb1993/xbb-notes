@@ -59,7 +59,8 @@ const mysqlSidebar = [
   // 每完成一篇笔记，在这里用 group('mysql', '模块名', ['slug', ...]) 追加一组
   group('mysql', '模块一 · 架构、SQL 生命周期与实验环境', ['t01-lab-env', 't02-architecture-lifecycle', 't03-select-execution', 't04-update-execution', 't05-sql-semantics', 't06-storage-engines']),
   group('mysql', '模块二 · InnoDB 物理存储', ['t07-tablespace-files', 't08-page-row-format']),
-  group('mysql', '模块三 · 索引', ['t09-bplus-tree']),
+  group('mysql', '模块三 · 索引', ['t09-bplus-tree', 't10-clustered-secondary-pk', 't11-composite-index', 't12-index-design', 't13-statistics', 't14-other-indexes']),
+  group('mysql', '模块四 · 优化器与查询优化', ['t15-explain', 't16-cost-model', 't17-optimizer-control', 't18-slow-query-refactor', 't19-sort-group-paging', 't20-join-subquery']),
 ]
 
 const mqttSidebar = [

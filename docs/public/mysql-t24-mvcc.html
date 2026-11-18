@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MVCC 版本链与 Read View</title>
+<style>
+:root{
+  --bg:#f7f7f5; --panel:#fff; --ink:#1f2328; --muted:#6a737d; --line:#d8dbe0;
+  --a:#0969da; --abg:#eef4ff; --b:#8250df; --bbg:#f3effc;
+  --ok:#1a7f37; --okbg:#dafbe1; --warn:#b26b00; --warnbg:#fff1d6; --bad:#cf222e; --badbg:#ffebe9;
+  --snap:#0a7d8c; --snapbg:#dff6f8;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#16181d; --panel:#1f2329; --ink:#e6e8eb; --muted:#9aa3ad; --line:#353b45;
+    --a:#58a6ff; --abg:#17263b; --b:#bc8cff; --bbg:#261d3a;
+    --ok:#3fb950; --okbg:#12301c; --warn:#d29922; --warnbg:#3a2c0d; --bad:#f85149; --badbg:#3d1618;
+    --snap:#39c5cf; --snapbg:#0f2e31;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.6 -apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1200px;margin:0 auto;padding:16px}
+h1{font-size:20px;margin:4px 0 2px} h2{font-size:15px;margin:0 0 8px}
+.sub{color:var(--muted);margin:0 0 12px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:12px}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+button,input{font:inherit;padding:6px 10px;border-radius:6px;border:1px solid var(--line);background:var(--panel);color:var(--ink)}
+button{cursor:pointer} button:hover{border-color:var(--a)}
+button.on{background:var(--a);border-color:var(--a);color:#fff}
+button.primary{background:var(--b);border-color:var(--b);color:#fff}
+button:disabled{opacity:.45;cursor:default}
+input{width:110px}
+.lbl{color:var(--muted);font-size:12px}
+.grid{display:grid;grid-template-columns:300px 1fr 300px;gap:12px}
+@media (max-width:1000px){.grid{grid-template-columns:1fr}}
+.ev{font-size:12.5px;padding:5px 6px;border-radius:6px;border-left:3px solid var(--line);margin-bottom:4px}
+.ev.done{border-left-color:var(--muted)} .ev.cur{background:var(--warnbg);border-left-color:var(--warn)}
+.ev.fut{opacity:.35}
+.ev .who{font-weight:600;margin-right:4px}
+.wY{color:#bf3989} .wW{color:#1a7f37} .wZ{color:#b26b00} .wB{color:var(--b)}
+@media (prefers-color-scheme: dark){ .wY{color:#ff7eb6} .wW{color:#3fb950} .wZ{color:#d29922} }
+.chainrow{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:8px 0 14px}
+.rowlbl{width:58px;font-weight:600;font-family:ui-monospace,Consolas,monospace}
+.ver{border:1px solid var(--line);border-radius:8px;padding:4px 8px;min-width:96px;font-family:ui-monospace,Consolas,monospace;font-size:12px;background:var(--panel);transition:all .3s}
+.ver b{font-size:15px;display:block}
+.ver .uc{color:var(--a);font-size:11px}
+.ver.vis{border-color:var(--ok);background:var(--okbg)}
+.ver.inv{border-color:var(--bad);background:var(--badbg);opacity:.85}
+.ver.new{animation:pop .5s}
+@keyframes pop{from{transform:scale(.6);opacity:0}to{transform:scale(1);opacity:1}}
+.arrow{color:var(--muted);font-size:12px}
+.rv dt{color:var(--muted);font-size:12px;margin-top:6px}
+.rv dd{margin:0;font-family:ui-monospace,Consolas,monospace;font-size:15px}
+.rv .src{font-size:11px;color:var(--muted)}
+.none{color:var(--muted)}
+.walk div{font-size:13px;padding:3px 0;border-bottom:1px dashed var(--line);opacity:0;animation:fade .35s forwards}
+@keyframes fade{to{opacity:1}}
+.tag{display:inline-block;font-size:11px;padding:0 6px;border-radius:10px;border:1px solid;margin-left:4px}
+.t-ok{color:var(--ok);border-color:var(--ok)} .t-bad{color:var(--bad);border-color:var(--bad)}
+.res{font-family:ui-monospace,Consolas,monospace;background:var(--snapbg);color:var(--snap);padding:2px 6px;border-radius:6px}
+.rule{font-family:ui-monospace,Consolas,monospace;font-size:12.5px;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px;white-space:pre;overflow-x:auto}
+.note{color:var(--muted);font-size:12px}
+#explain{min-height:52px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>MVCC：版本链与 Read View</h1>
+  <p class="sub">MySQL 专题 24 配套。复现沙箱 MySQL 8.0.46 的实验：四个事务 Y、W、Z、B 操作 <code>t_acct</code> 的 4 行（初始余额都是 1000）。每次 B 执行普通 SELECT，都会拿着 Read View 沿每一行的版本链从新往旧判断，直到找到第一个可见的版本。事务 ID 为实测值。</p>
+
+  <div class="panel">
+    <div class="row">
+      <span class="lbl">会话 B 的隔离级别</span>
+      <button data-l="RR">REPEATABLE READ</button>
+      <button data-l="RC">READ COMMITTED</button>
+      <span style="width:16px"></span>
+      <button id="bPrev">◀ 上一步</button>
+      <button id="bNext" class="primary">下一步 ▶</button>
+      <button id="bPlay">自动播放</button>
+      <button id="bReset">重置</button>
+      <span class="lbl" id="status"></span>
+    </div>
+    <div id="explain" style="margin-top:8px"></div>
+  </div>
+
+  <div class="grid">
+    <div class="panel">
+      <h2>事件</h2>
+      <div id="events"></div>
+      <p class="note">全局计数器（Trx id counter）同时用于分配事务 ID 和提交序号，所以每次提交也会消耗一个号，事务 ID 之间会有空号。</p>
+    </div>
+    <div class="panel">
+      <h2>每一行的版本链（左边最新，箭头 = 回滚指针 DB_ROLL_PTR 指向更旧的版本）</h2>
+      <div id="chains"></div>
+      <h2 style="margin-top:6px">B 这次 SELECT 的判断过程</h2>
+      <div id="walk" class="walk"><span class="none">执行到 B 的 SELECT 时显示。</span></div>
+    </div>
+    <div>
+      <div class="panel rv">
+        <h2>B 的 Read View（读视图）</h2>
+        <div id="rv"></div>
+      </div>
+      <div class="panel">
+        <h2>判断规则（changes_visible）</h2>
+        <div class="rule">版本的 trx_id 记为 id：
+1. id == 创建者 ID      → 可见（自己写的）
+2. id &lt;  低水位          → 可见（拍照前就提交了）
+3. id &gt;= 高水位          → 不可见（拍照后才开始）
+4. id 在活跃名单 m_ids 中 → 不可见（拍照时还没提交）
+5. 否则                  → 可见（拍照前已提交）
+不可见 → 沿回滚指针找上一个版本，重复判断</div>
+        <div class="row" style="margin-top:8px">
+          <input id="tryId" type="number" placeholder="输入 trx_id">
+          <button id="bTry">用当前 Read View 判断</button>
+        </div>
+        <div id="tryOut" class="note" style="margin-top:6px"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const INIT_ID = 'init';
+const EVENTS = [
+  {who:'Y', text:'BEGIN; UPDATE id=2 → 2000（不提交）', act:s=>{ s.Y=s.next++; s.active.add(s.Y); push(s,2,2000,s.Y,false); }},
+  {who:'W', text:'BEGIN; UPDATE id=3 → 3000; COMMIT', act:s=>{ s.W=s.next++; push(s,3,3000,s.W,true); s.next++; }},
+  {who:'B', text:'BEGIN; SELECT * FROM t_acct', sel:true},
+  {who:'Z', text:'BEGIN; UPDATE id=1 → 1111; COMMIT', act:s=>{ s.Z=s.next++; push(s,1,1111,s.Z,true); s.next++; }},
+  {who:'B', text:'SELECT * FROM t_acct', sel:true},
+  {who:'B', text:'UPDATE id=4 → 4444（B 第一次写）', act:s=>{ s.B=s.next++; s.active.add(s.B); push(s,4,4444,s.B,false);
+      if(s.view) s.view.creator=s.B; }},
+  {who:'B', text:'SELECT * FROM t_acct', sel:true},
+  {who:'Y', text:'COMMIT', act:s=>{ s.active.delete(s.Y); s.chain[2][0].committed=true; s.next++; }},
+  {who:'B', text:'SELECT * FROM t_acct', sel:true},
+];
+let level='RR', pos=0, timer=null;
+function push(s,id,bal,trx,committed){ s.chain[id].unshift({bal,trx,committed,born:s.step}); }
+function makeView(s){
+  const ids=[...s.active].filter(x=>x!==s.B).sort((a,b)=>a-b);
+  const low=s.next;
+  return {low, ids, up: ids.length?ids[0]:low, creator: s.B||0, at:s.step, measured: level==='RR'};
+}
+function visible(v, trx){
+  if(trx===INIT_ID) return [true,'初始版本，由更早已提交的事务写入，ID 小于低水位 → 可见'];
+  if(trx===v.creator) return [true,`${trx} 等于创建者 ID → 自己写的，可见`];
+  if(trx<v.up) return [true,`${trx} < 低水位 ${v.up} → 拍照前已提交，可见`];
+  if(trx>=v.low) return [false,`${trx} ≥ 高水位 ${v.low} → 拍照之后才开始，不可见`];
+  if(v.ids.includes(trx)) return [false,`${trx} 在活跃名单 [${v.ids.join(', ')}] 中 → 拍照时未提交，不可见`];
+  return [true,`${trx} 在低水位与高水位之间且不在活跃名单中 → 拍照前已提交，可见`];
+}
+function simulate(upto){
+  const s={next:20682, active:new Set(), chain:{1:[],2:[],3:[],4:[]}, view:null, lastView:null, walk:null, step:0, Y:0,W:0,Z:0,B:0, viewNew:false};
+  for(const id of [1,2,3,4]) s.chain[id].push({bal:1000,trx:INIT_ID,committed:true,born:-1});
+  for(let i=0;i<upto;i++){
+    s.step=i; const e=EVENTS[i]; s.walk=null; s.viewNew=false;
+    if(e.act) e.act(s);
+    if(e.sel){
+      if(level==='RC' || !s.view){ s.view=makeView(s); s.viewNew=true; }
+      const v=s.view; s.lastView=v;
+      s.walk={};
+      for(const id of [1,2,3,4]){
+        const steps=[]; let val=null;
+        for(let k=0;k<s.chain[id].length;k++){
+          const ver=s.chain[id][k]; const [ok,why]=visible(v,ver.trx);
+          steps.push({k,ok,why}); if(ok){val=ver.bal;break;}
+        }
+        s.walk[id]={steps,val};
+      }
+      if(level==='RC') s.view=null;   // RC：语句结束即关闭 Read View
+    }
+  }
+  return s;
+}
+const $=id=>document.getElementById(id);
+function render(){
+  document.querySelectorAll('[data-l]').forEach(b=>b.classList.toggle('on',b.dataset.l===level));
+  const s=simulate(pos);
+  $('events').innerHTML=EVENTS.map((e,i)=>`<div class="ev ${i<pos-1?'done':i===pos-1?'cur':'fut'}"><span class="who w${e.who}">${e.who}</span>${e.text}</div>`).join('');
+  // chains
+  let h='';
+  for(const id of [1,2,3,4]){
+    const w=s.walk?s.walk[id]:null;
+    h+=`<div class="chainrow"><span class="rowlbl">id=${id}</span>`;
+    s.chain[id].forEach((ver,k)=>{
+      let cls='ver'; if(w){ const st=w.steps.find(x=>x.k===k); if(st) cls+=st.ok?' vis':' inv'; }
+      if(ver.born===pos-1) cls+=' new';
+      h+=(k?'<span class="arrow">─roll_ptr→</span>':'')+`<div class="${cls}"><b>${ver.bal}</b>trx_id=${ver.trx===INIT_ID?'&lt;20682':ver.trx}${ver.committed?'':'<div class="uc">未提交</div>'}</div>`;
+    });
+    h+='</div>';
+  }
+  $('chains').innerHTML=h;
+  // walk
+  if(s.walk){
+    let wh='', d=0, res=[];
+    for(const id of [1,2,3,4]){
+      const w=s.walk[id]; res.push(`(${id}, ${w.val})`);
+      w.steps.forEach((st,j)=>{ wh+=`<div style="animation-delay:${(d++)*0.35}s">id=${id} · 版本${j+1}：${st.why}<span class="tag ${st.ok?'t-ok':'t-bad'}">${st.ok?'取这个版本':'往前找'}</span></div>`; });
+    }
+    wh+=`<div style="animation-delay:${d*0.35}s">B 的查询结果：<span class="res">${res.join(' ')}</span></div>`;
+    $('walk').innerHTML=wh;
+  } else $('walk').innerHTML='<span class="none">执行到 B 的 SELECT 时显示。</span>';
+  // read view
+  const v=s.view||s.lastView;
+  if(v){
+    const closed = !s.view;
+    $('rv').innerHTML=`${closed?'<p class="note">RC：上一条语句结束后，这个 Read View 已关闭；下面是它最后的内容。</p>':''}
+      <dl>
+      <dt>活跃名单 m_ids（拍照时还没提交的读写事务，不含 B 自己）</dt><dd>[${v.ids.join(', ')}]</dd>
+      <dt>低水位 m_up_limit_id（名单中最小 ID；名单为空时等于高水位）</dt><dd>${v.up}</dd>
+      <dt>高水位 m_low_limit_id（拍照时下一个待分配的号）</dt><dd>${v.low}</dd>
+      <dt>创建者 m_creator_trx_id</dt><dd>${v.creator||'0（B 还没有写过，未分配 ID）'}</dd>
+      </dl>
+      <p class="src">${v.measured?'RR 的高水位 20685、低水位 20682 与实测 SHOW ENGINE INNODB STATUS 输出一致：Trx read view will not see trx with id &gt;= 20685, sees &lt; 20682':'RC 的数值按源码规则推算：每条语句开始时重新拍照。'}${s.viewNew?'<br><b>本步新建了 Read View。</b>':''}</p>`;
+  } else $('rv').innerHTML='<p class="none">还没有 Read View。B 的第一次普通 SELECT 才会创建。</p>';
+  // explain
+  const e=EVENTS[pos-1];
+  const ex={
+    0:'初始：4 行余额都是 1000，由更早的、已经提交的事务写入。',
+    1:'Y 修改 id=2，分配事务 ID 20682。新版本挂到版本链最前面，旧版本（1000）留在 undo 中，由回滚指针指向。Y 不提交。',
+    2:'W 修改 id=3 并提交，事务 ID 20683；提交时又从同一个计数器取走 20684 作为提交序号。',
+    3: level==='RR'?'B 第一次普通 SELECT，创建 Read View：记下此刻还活跃的事务 [20682] 和下一个待分配号 20685。注意：拍下的是名单，不是数据。':'RC：每条 SELECT 开始时都新建 Read View。',
+    4:'Z 修改 id=1 并提交，ID 20685（等于 B 的高水位），提交序号 20686。',
+    5: level==='RR'?'RR：沿用第一次的 Read View。Z 的 ID 20685 ≥ 高水位，不可见，沿回滚指针找到 1000。':'RC：新建 Read View，高水位变为 20687，Z 的 20685 小于它且不在名单中，可见。',
+    6:'B 第一次写，分配 ID 20687，并把自己 Read View 的创建者改成 20687（源码注释：So that we can see our own changes）。UPDATE 是当前读，不用 Read View。',
+    7: level==='RR'?'20687 ≥ 高水位 20685，按规则 3 本应不可见，但规则 1 先判断“是不是自己”，所以 B 看得到 4444。':'RC：新 Read View 的创建者就是 20687，自己的修改可见。',
+    8:'Y 提交，消耗提交序号 20688，从活跃事务中移除。',
+    9: level==='RR'?'RR：Read View 仍是第一次拍的，名单里还记着 20682，所以 Y 已提交的 2000 依然不可见。':'RC：新 Read View 的名单为空，Y 的 20682 小于低水位，可见，读到 2000。'
+  };
+  $('explain').innerHTML = `<b>${pos===0?'初始':'第 '+pos+' 步'}</b>　${ex[pos]||''}`;
+  $('status').textContent=`${pos} / ${EVENTS.length}`;
+  $('bPrev').disabled=pos===0; $('bNext').disabled=pos===EVENTS.length;
+  $('tryOut').textContent='';
+}
+function stop(){ if(timer){clearInterval(timer);timer=null;$('bPlay').textContent='自动播放';} }
+document.querySelectorAll('[data-l]').forEach(b=>b.onclick=()=>{stop();level=b.dataset.l;pos=0;render();});
+$('bNext').onclick=()=>{ if(pos<EVENTS.length){pos++;render();} };
+$('bPrev').onclick=()=>{ stop(); if(pos>0){pos--;render();} };
+$('bReset').onclick=()=>{ stop(); pos=0; render(); };
+$('bPlay').onclick=()=>{ if(timer){stop();return;} if(pos>=EVENTS.length) pos=0; $('bPlay').textContent='暂停';
+  timer=setInterval(()=>{ if(pos>=EVENTS.length){stop();return;} pos++; render(); },2600); };
+$('bTry').onclick=()=>{
+  const s=simulate(pos); const v=s.view||s.lastView; const n=parseInt($('tryId').value,10);
+  if(!v){ $('tryOut').textContent='当前还没有 Read View。'; return; }
+  if(isNaN(n)){ $('tryOut').textContent='请输入一个数字。'; return; }
+  const [ok,why]=visible(v,n); $('tryOut').textContent=(ok?'可见：':'不可见：')+why;
+};
+render();
+</script>
+</body>
+</html>

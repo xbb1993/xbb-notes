@@ -60,7 +60,8 @@ const mysqlSidebar = [
   group('mysql', '模块一 · 架构、SQL 生命周期与实验环境', ['t01-lab-env', 't02-architecture-lifecycle', 't03-select-execution', 't04-update-execution', 't05-sql-semantics', 't06-storage-engines']),
   group('mysql', '模块二 · InnoDB 物理存储', ['t07-tablespace-files', 't08-page-row-format']),
   group('mysql', '模块三 · 索引', ['t09-bplus-tree', 't10-clustered-secondary-pk', 't11-composite-index', 't12-index-design', 't13-statistics', 't14-other-indexes']),
-  group('mysql', '模块四 · 优化器与查询优化', ['t15-explain', 't16-cost-model', 't17-optimizer-control', 't18-slow-query-refactor', 't19-sort-group-paging', 't20-join-subquery']),
+  group('mysql', '模块四 · 优化器与查询优化', ['t15-explain', 't16-cost-model', 't17-optimizer-control', 't18-slow-query-refactor', 't19-sort-group-paging', 't20-join-subquery', 't21-common-slow-sql', 't22-slow-sql-workflow']),
+  group('mysql', '模块五 · 事务、MVCC 与锁', ['t23-transaction-isolation', 't24-mvcc', 't25-locks-overview', 't26-gap-nextkey-locks']),
 ]
 
 const mqttSidebar = [

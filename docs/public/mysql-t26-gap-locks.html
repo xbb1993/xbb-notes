@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>间隙锁与临键锁图解</title>
+<style>
+:root{
+  --bg:#f7f7f5; --panel:#fff; --ink:#1f2328; --muted:#6a737d; --line:#d8dbe0;
+  --a:#0969da; --abg:#eef4ff; --rec:#cf222e; --recbg:#ffebe9; --gap:#b26b00; --gapbg:#fff1d6;
+  --ok:#1a7f37; --okbg:#dafbe1; --free:#eef0f3;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#16181d; --panel:#1f2329; --ink:#e6e8eb; --muted:#9aa3ad; --line:#353b45;
+    --a:#58a6ff; --abg:#17263b; --rec:#f85149; --recbg:#3d1618; --gap:#d29922; --gapbg:#3a2c0d;
+    --ok:#3fb950; --okbg:#12301c; --free:#2b3038;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.6 -apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:16px}
+h1{font-size:20px;margin:4px 0 2px} h2{font-size:15px;margin:0 0 8px}
+.sub{color:var(--muted);margin:0 0 12px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:12px}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+button,input{font:inherit;padding:6px 10px;border-radius:6px;border:1px solid var(--line);background:var(--panel);color:var(--ink)}
+button{cursor:pointer} button:hover{border-color:var(--a)} button.on{background:var(--a);border-color:var(--a);color:#fff}
+input{width:90px}
+.lbl{color:var(--muted);font-size:12px}
+code,.mono{font-family:ui-monospace,Consolas,monospace;font-size:12.5px}
+.axis{display:flex;align-items:stretch;margin:6px 0 4px;overflow-x:auto;padding-bottom:4px}
+.gap{flex:1;min-width:56px;height:46px;border-radius:6px;background:var(--free);display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--muted);margin:0 3px;transition:.3s;text-align:center;line-height:1.2}
+.gap.locked{background:var(--gapbg);color:var(--gap);border:2px solid var(--gap);font-weight:600}
+.rec{min-width:66px;height:46px;border-radius:6px;border:2px solid var(--line);display:flex;flex-direction:column;align-items:center;justify-content:center;font-family:ui-monospace,Consolas,monospace;font-size:13px;transition:.3s;background:var(--panel)}
+.rec small{font-size:10px;color:var(--muted);font-family:inherit}
+.rec.locked{border-color:var(--rec);background:var(--recbg);color:var(--rec);font-weight:700}
+.rec.sup{border-style:dashed}
+.axlbl{font-weight:600;margin-top:6px}
+table{border-collapse:collapse;width:100%} th,td{border-bottom:1px solid var(--line);padding:5px 8px;text-align:left;font-size:13px} th{color:var(--muted);font-size:12px}
+.b{color:var(--rec);font-weight:600} .k{color:var(--ok);font-weight:600}
+.legend{display:flex;flex-wrap:wrap;gap:14px;color:var(--muted);font-size:12px;margin-top:6px}
+.sw{display:inline-block;width:14px;height:14px;border-radius:3px;margin-right:4px;vertical-align:-2px}
+#why{font-size:14px}
+.note{color:var(--muted);font-size:12px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>间隙锁与临键锁图解</h1>
+  <p class="sub">MySQL 专题 26 配套。表 <code>t_lk(id 主键, c 普通索引, d 无索引)</code>，6 行数据：id = c = d = 0、5、10、15、20、25。会话 A 执行一条语句后不提交，图中标出它锁住的索引记录（红）和间隙（橙）；下方“探测”是会话 B 的真实执行结果。所有锁信息均来自沙箱 MySQL 8.0.46 的 <code>performance_schema.data_locks</code>。</p>
+
+  <div class="panel">
+    <div class="row"><span class="lbl">A 的语句</span><span id="cases" class="row"></span></div>
+    <div class="row" style="margin-top:8px"><span class="lbl">隔离级别</span>
+      <button data-l="RR">REPEATABLE READ</button><button data-l="RC">READ COMMITTED</button></div>
+    <p style="margin:10px 0 0"><span class="lbl">A：</span><code id="sql"></code></p>
+  </div>
+
+  <div class="panel">
+    <h2>锁住了什么</h2>
+    <div id="axes"></div>
+    <div class="legend">
+      <span><i class="sw" style="background:var(--recbg);border:2px solid var(--rec)"></i>记录被锁（记录锁）</span>
+      <span><i class="sw" style="background:var(--gapbg);border:2px solid var(--gap)"></i>间隙被锁（间隙锁）：不能往这段空隙里插入</span>
+      <span>记录 + 它左边的间隙都锁 = 临键锁（data_locks 中模式为 <code>X</code>）</span>
+    </div>
+    <h2 style="margin-top:12px">data_locks 原始输出（行锁部分）</h2>
+    <table><thead><tr><th>INDEX_NAME</th><th>LOCK_MODE</th><th>LOCK_DATA</th><th>含义</th></tr></thead><tbody id="dl"></tbody></table>
+  </div>
+
+  <div class="grid panel">
+    <h2>会话 B 的探测（真实结果，锁等待超时设为 1 秒）</h2>
+    <table><thead><tr><th>B 执行</th><th>结果</th></tr></thead><tbody id="probes"></tbody></table>
+    <div class="row" style="margin-top:10px">
+      <span class="lbl">自己试：插入一行，id = c =</span><input id="ins" type="number" placeholder="如 12"><button id="bIns">按图判断</button>
+      <span id="insOut" class="note"></span>
+    </div>
+    <p class="note">“自己试”按图中锁住的间隙推算：新值落在哪个间隙，就看该间隙是否被锁（两个索引都要检查），不是实测。</p>
+  </div>
+
+  <div class="panel">
+    <h2>为什么这样锁</h2>
+    <div id="why"></div>
+  </div>
+</div>
+<script>
+const KEYS=[0,5,10,15,20,25];
+// locks: {idx:'PRIMARY'|'idx_c', key: number|'sup', mode:'X'|'X,GAP'|'X,REC_NOT_GAP'}
+const C={
+ C1:{name:'① 唯一索引等值，命中', sql:'UPDATE t_lk SET d = d + 1 WHERE id = 10',
+   RR:{locks:[['PRIMARY',10,'X,REC_NOT_GAP']], probes:[['UPDATE ... WHERE id = 10',1],['INSERT id=8',0],['INSERT id=12',0]],
+     why:'主键唯一：id=10 最多只有一行，别人不可能再插入一个 id=10。只要锁住这一条记录，就能保证“id=10 的结果”在事务内不变，不需要锁间隙。'},
+   RC:{locks:[['PRIMARY',10,'X,REC_NOT_GAP']], probes:[['UPDATE ... WHERE id = 10',1],['INSERT id=8',0],['INSERT id=12',0]],
+     why:'RC 只锁记录。命中的 id=10 被锁到事务结束。'}},
+ C2:{name:'② 唯一索引等值，未命中', sql:'UPDATE t_lk SET d = d + 1 WHERE id = 7',
+   RR:{locks:[['PRIMARY',10,'X,GAP']], probes:[['INSERT id=6',1],['INSERT id=9',1],['INSERT id=11',0],['UPDATE ... WHERE id = 10',0],['UPDATE ... WHERE id = 5',0]],
+     why:'id=7 不存在，没有记录可锁。要保证“id=7 不存在”在事务内一直成立，就得阻止别人插入 id=7，所以锁住 7 所在的整个间隙 (5,10)。锁挂在间隙右边的记录 10 上，但只锁间隙、不锁 10 本身，所以改 id=10 不受影响。'},
+   RC:{locks:[], probes:[['INSERT id=6',0],['INSERT id=9',0],['INSERT id=11',0],['UPDATE ... WHERE id = 10',0],['UPDATE ... WHERE id = 5',0]],
+     why:'RC 不锁间隙。没有命中任何记录，所以什么都不锁，别人可以插入 id=7，A 再执行同样的当前读就会看到新行（当前读的幻读）。'}},
+ C3:{name:'③ 普通索引等值，命中', sql:'UPDATE t_lk SET d = d + 1 WHERE c = 10',
+   RR:{locks:[['idx_c',10,'X'],['idx_c',15,'X,GAP'],['PRIMARY',10,'X,REC_NOT_GAP']], probes:[['INSERT c=7',1],['INSERT c=12',1],['INSERT c=14',1],['INSERT c=16',0],['INSERT c=3',0],['UPDATE ... WHERE id = 15',0]],
+     why:'c 不唯一，别人可能再插入一个 c=10 的行，它在索引里可能排在现有 (10,10) 的左边，也可能排在右边。所以左边的间隙 (5,10) 和右边的间隙 (10,15) 都要锁：(10,10) 上是临键锁（记录 + 左间隙），(15,15) 上只锁左间隙（扫描到 15 发现不等于 10 就停下，记录 15 本身不需要锁）。回表到主键时，只锁命中的那一行。'},
+   RC:{locks:[['idx_c',10,'X,REC_NOT_GAP'],['PRIMARY',10,'X,REC_NOT_GAP']], probes:[['INSERT c=7',0],['INSERT c=12',0],['INSERT c=14',0],['INSERT c=16',0],['INSERT c=3',0],['UPDATE ... WHERE id = 15',0]],
+     why:'RC 只锁命中的记录：二级索引上的 (10,10) 和主键上的 10。'}},
+ C4:{name:'④ 唯一索引范围', sql:'UPDATE t_lk SET d = d + 1 WHERE id >= 10 AND id < 12',
+   RR:{locks:[['PRIMARY',10,'X,REC_NOT_GAP'],['PRIMARY',15,'X,GAP']], probes:[['INSERT id=11',1],['INSERT id=13',1],['INSERT id=16',0],['UPDATE ... WHERE id = 15',0]],
+     why:'范围 [10,12) 中已有的记录只有 10，锁住它；还要阻止往范围里插入新行（如 11），所以锁住 10 右边的间隙 (10,15)，锁挂在 15 上但只锁间隙。8.0.46 实测 15 本身不锁（有些资料描述为临键锁，以实测为准）。注意 13 也被挡住了，因为间隙锁的单位是整段空隙，不是精确到 12。'},
+   RC:{locks:[['PRIMARY',10,'X,REC_NOT_GAP']], probes:[['INSERT id=11',0],['INSERT id=13',0],['INSERT id=16',0],['UPDATE ... WHERE id = 15',0]],
+     why:'RC 只锁命中的记录 10。'}},
+ C5:{name:'⑤ 范围一直到表尾', sql:'SELECT * FROM t_lk WHERE id > 15 FOR UPDATE',
+   RR:{locks:[['PRIMARY',20,'X'],['PRIMARY',25,'X'],['PRIMARY','sup','X']], probes:[['INSERT id=16',1],['INSERT id=30',1],['INSERT id=14',0],['UPDATE ... WHERE id = 15',0]],
+     why:'范围 (15,+∞)：记录 20、25 及它们左边的间隙用临键锁；25 右边到“无穷大”的间隙，锁挂在一条特殊的伪记录 supremum（页内的“最大记录”，表示比所有真实记录都大）上。这样 30 也插不进来。'},
+   RC:{locks:[['PRIMARY',20,'X,REC_NOT_GAP'],['PRIMARY',25,'X,REC_NOT_GAP']], probes:[['INSERT id=16',0],['INSERT id=30',0],['INSERT id=14',0],['UPDATE ... WHERE id = 15',0]],
+     why:'RC 只锁命中的 20、25；30 可以插入，A 再执行同一条 FOR UPDATE 会多出 30（实测）。'}},
+ C6:{name:'⑥ 条件列没有索引', sql:'UPDATE t_lk SET c = c WHERE d = 10',
+   RR:{locks:[['PRIMARY',0,'X'],['PRIMARY',5,'X'],['PRIMARY',10,'X'],['PRIMARY',15,'X'],['PRIMARY',20,'X'],['PRIMARY',25,'X'],['PRIMARY','sup','X']], probes:[['INSERT id=3',1],['INSERT id=30',1],['UPDATE ... WHERE id = 25',1]],
+     why:'d 没有索引，只能扫描整个主键。RR 下访问过的每条记录都加临键锁，并保留到事务结束：所有记录、所有间隙都被锁住，等同于锁表。'},
+   RC:{locks:[['PRIMARY',10,'X,REC_NOT_GAP']], probes:[['INSERT id=3',0],['INSERT id=30',0],['UPDATE ... WHERE id = 25',0]],
+     why:'RC 同样逐行访问、逐行加锁，但不满足条件的行判断完立即释放，最后只剩命中的 10。'}}
+};
+let cs='C1', lv='RR';
+const $=id=>document.getElementById(id);
+$('cases').innerHTML=Object.entries(C).map(([k,v])=>`<button data-c="${k}">${v.name}</button>`).join('');
+function lockOf(locks, idx, key){ return locks.find(l=>l[0]===idx && l[1]===key); }
+function axis(idx, locks){
+  const pts=[...KEYS,'sup']; let h=`<div class="axlbl mono">${idx==='PRIMARY'?'主键索引 PRIMARY（按 id 排序）':'普通索引 idx_c（按 (c, id) 排序）'}</div><div class="axis">`;
+  let prev='-∞';
+  pts.forEach(k=>{
+    const L=lockOf(locks, idx, k); const gapLocked=L && (L[2]==='X'||L[2]==='X,GAP'); const recLocked=L && (L[2]==='X'||L[2]==='X,REC_NOT_GAP');
+    h+=`<div class="gap ${gapLocked?'locked':''}">(${prev}, ${k==='sup'?'+∞':k})</div>`;
+    if(k==='sup') h+=`<div class="rec sup ${recLocked?'locked':''}">supremum<small>伪记录</small></div>`;
+    else h+=`<div class="rec ${recLocked?'locked':''}">${idx==='PRIMARY'?k:'('+k+','+k+')'}<small>${idx==='PRIMARY'?'id':'c,id'}</small></div>`;
+    prev=k;
+  });
+  return h+'</div>';
+}
+function meaning(l){
+  const k=l[1]==='sup'?'supremum':l[1]; const prev = l[1]==='sup'?25:KEYS[KEYS.indexOf(l[1])-1];
+  const g = prev===undefined?'(-∞, '+k+')':`(${prev}, ${l[1]==='sup'?'+∞':k})`;
+  if(l[2]==='X,REC_NOT_GAP') return `记录锁：只锁记录 ${k}`;
+  if(l[2]==='X,GAP') return `间隙锁：只锁间隙 ${g}，不锁记录 ${k}`;
+  return `临键锁：锁间隙 ${g} 和记录 ${k}`+(l[1]==='sup'?'（supremum 不是真实记录，实际效果是锁住 25 之后的所有空间）':'');
+}
+function render(){
+  document.querySelectorAll('[data-c]').forEach(b=>b.classList.toggle('on',b.dataset.c===cs));
+  document.querySelectorAll('[data-l]').forEach(b=>b.classList.toggle('on',b.dataset.l===lv));
+  const c=C[cs], d=c[lv]; $('sql').textContent=c.sql;
+  const useC = c[ 'RR' ].locks.some(l=>l[0]==='idx_c') || d.locks.some(l=>l[0]==='idx_c');
+  $('axes').innerHTML=(useC?axis('idx_c',d.locks):'')+axis('PRIMARY',d.locks);
+  $('dl').innerHTML=d.locks.length?d.locks.map(l=>`<tr><td class="mono">${l[0]}</td><td class="mono">${l[2]}</td><td class="mono">${l[1]==='sup'?'supremum pseudo-record':(l[0]==='idx_c'?l[1]+', '+l[1]:l[1])}</td><td>${meaning(l)}</td></tr>`).join(''):'<tr><td colspan="4">（无行锁）</td></tr>';
+  $('probes').innerHTML=d.probes.map(p=>`<tr><td class="mono">${p[0]}</td><td class="${p[1]?'b':'k'}">${p[1]?'被阻塞（等待超时 ERROR 1205）':'立即成功'}</td></tr>`).join('');
+  $('why').innerHTML=d.why; $('insOut').textContent='';
+}
+function nextKey(v){ for(const k of KEYS) if(k>v) return k; return 'sup'; }
+$('bIns').onclick=()=>{
+  const v=parseInt($('ins').value,10); if(isNaN(v)){ $('insOut').textContent='请输入数字'; return; }
+  if(KEYS.includes(v)){ $('insOut').textContent='id 已存在：主键冲突（这里不讨论重复键的加锁）'; return; }
+  const d=C[cs][lv]; const nk=nextKey(v); const hits=[];
+  for(const idx of ['PRIMARY','idx_c']){ const L=lockOf(d.locks,idx,nk); if(L && (L[2]==='X'||L[2]==='X,GAP')) hits.push(`${idx} 上 ${nk==='sup'?'supremum':nk} 左边的间隙被锁`); }
+  $('insOut').innerHTML = hits.length?`<span class="b">会被阻塞</span>：${v} 落在 ${nk==='sup'?'25 之后':nk+' 左边'}的间隙，${hits.join('；')}`:`<span class="k">不会被阻塞</span>：${v} 所在的间隙没有被锁`;
+};
+document.querySelectorAll('[data-c]').forEach(b=>b.onclick=()=>{cs=b.dataset.c;render();});
+document.querySelectorAll('[data-l]').forEach(b=>b.onclick=()=>{lv=b.dataset.l;render();});
+render();
+</script>
+</body>
+</html>

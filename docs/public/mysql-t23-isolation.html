@@ -1,0 +1,336 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>隔离级别时间线图解</title>
+<style>
+:root{
+  --bg:#f7f7f5; --panel:#fff; --ink:#1f2328; --muted:#6a737d; --line:#d8dbe0;
+  --a:#0969da; --abg:#eef4ff; --b:#8250df; --bbg:#f3effc;
+  --ok:#1a7f37; --okbg:#dafbe1; --warn:#b26b00; --warnbg:#fff1d6; --bad:#cf222e; --badbg:#ffebe9;
+  --snap:#0a7d8c; --snapbg:#dff6f8;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#16181d; --panel:#1f2329; --ink:#e6e8eb; --muted:#9aa3ad; --line:#353b45;
+    --a:#58a6ff; --abg:#17263b; --b:#bc8cff; --bbg:#261d3a;
+    --ok:#3fb950; --okbg:#12301c; --warn:#d29922; --warnbg:#3a2c0d; --bad:#f85149; --badbg:#3d1618;
+    --snap:#39c5cf; --snapbg:#0f2e31;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.6 -apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:16px}
+h1{font-size:20px;margin:4px 0 2px} h2{font-size:15px;margin:0 0 8px}
+.sub{color:var(--muted);margin:0 0 12px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:12px}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+button,select{font:inherit;padding:6px 10px;border-radius:6px;border:1px solid var(--line);background:var(--panel);color:var(--ink);cursor:pointer}
+button:hover{border-color:var(--a)}
+button.on{background:var(--a);border-color:var(--a);color:#fff}
+button.primary{background:var(--b);border-color:var(--b);color:#fff}
+button:disabled{opacity:.45;cursor:default}
+.lbl{color:var(--muted);font-size:12px;margin-right:2px}
+.grid{display:grid;grid-template-columns:1.25fr 1fr;gap:12px}
+@media (max-width:860px){.grid{grid-template-columns:1fr}}
+table{border-collapse:collapse;width:100%}
+th,td{border-bottom:1px solid var(--line);padding:6px 8px;text-align:left;vertical-align:top}
+th{color:var(--muted);font-weight:600;font-size:12px}
+.tl td{font-family:ui-monospace,Consolas,monospace;font-size:12.5px}
+.tl td.t{color:var(--muted);width:38px;font-family:inherit}
+.tl tr.cur td{background:color-mix(in srgb,var(--warnbg) 70%,transparent)}
+.tl tr.future td{opacity:.28}
+.ca{border-left:3px solid var(--a)} .cb{border-left:3px solid var(--b)}
+.sqlA{color:var(--a)} .sqlB{color:var(--b)}
+.res{display:inline-block;margin-top:3px;font-family:inherit;font-size:12px;padding:1px 8px;border-radius:10px;border:1px solid}
+.r-ok{color:var(--ok);border-color:var(--ok);background:var(--okbg)}
+.r-warn{color:var(--warn);border-color:var(--warn);background:var(--warnbg)}
+.r-bad{color:var(--bad);border-color:var(--bad);background:var(--badbg)}
+.r-info{color:var(--snap);border-color:var(--snap);background:var(--snapbg)}
+.db td{font-family:ui-monospace,Consolas,monospace}
+.cell-pend{color:var(--a);background:var(--abg);border-radius:4px;padding:0 4px}
+.cell-snap{color:var(--snap);background:var(--snapbg);border-radius:4px;padding:0 4px}
+.cell-own{color:var(--b);background:var(--bbg);border-radius:4px;padding:0 4px}
+.dash{color:var(--muted)}
+#explain{font-size:14px;min-height:86px}
+#explain b{color:var(--b)}
+.legend{display:flex;flex-wrap:wrap;gap:12px;color:var(--muted);font-size:12px;margin-top:8px}
+.sw{display:inline-block;width:12px;height:12px;border-radius:3px;margin-right:4px;vertical-align:-2px}
+.matrix td,.matrix th{text-align:center} .matrix td:first-child,.matrix th:first-child{text-align:left}
+.note{color:var(--muted);font-size:12px}
+.status{font-size:12px;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>隔离级别时间线图解</h1>
+  <p class="sub">MySQL 专题 23 配套。两个会话操作同一张账户表 <code>t_acct</code>：会话 A 负责修改，会话 B 负责读取。逐步执行，观察 B 在不同隔离级别下读到什么。每个场景的结果都与沙箱 MySQL 8.0.46 的实测输出一致。</p>
+
+  <div class="panel">
+    <div class="row">
+      <span class="lbl">场景</span>
+      <button data-s="dirty">① 脏读</button>
+      <button data-s="nonrep">② 不可重复读</button>
+      <button data-s="phantom">③ 幻读（快照读 vs 当前读）</button>
+      <button data-s="timing">④ 快照什么时候建立</button>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <span class="lbl">会话 B 的隔离级别</span>
+      <button data-l="RU">READ UNCOMMITTED</button>
+      <button data-l="RC">READ COMMITTED</button>
+      <button data-l="RR">REPEATABLE READ（默认）</button>
+      <span id="startBox" class="row" style="gap:6px">
+        <span class="lbl" style="margin-left:10px">B 开启事务的方式</span>
+        <button data-m="begin">BEGIN</button>
+        <button data-m="cs">START TRANSACTION WITH CONSISTENT SNAPSHOT</button>
+      </span>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <button id="bPrev">◀ 上一步</button>
+      <button id="bNext" class="primary">下一步 ▶</button>
+      <button id="bPlay">自动播放</button>
+      <button id="bReset">重置</button>
+      <span class="status" id="status"></span>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div class="panel">
+      <h2>时间线</h2>
+      <table class="tl"><thead><tr><th>时刻</th><th class="ca">会话 A（修改方）</th><th class="cb">会话 B（读取方）</th></tr></thead><tbody id="tl"></tbody></table>
+    </div>
+    <div>
+      <div class="panel">
+        <h2>此刻数据库里的样子</h2>
+        <table class="db"><thead><tr><th>id</th><th>name</th><th>已提交的值</th><th>A 未提交的修改</th><th>B 的快照</th><th>B 自己的修改</th></tr></thead><tbody id="db"></tbody></table>
+        <div class="legend">
+          <span><i class="sw" style="background:var(--abg);border:1px solid var(--a)"></i>A 改了但还没提交，只有 A 自己（和 RU 级别的读）看得到</span>
+          <span><i class="sw" style="background:var(--snapbg);border:1px solid var(--snap)"></i>B 的快照：建立那一刻已提交数据的“照片”</span>
+          <span><i class="sw" style="background:var(--bbg);border:1px solid var(--b)"></i>B 自己改过的行，B 总能看到</span>
+        </div>
+      </div>
+      <div class="panel">
+        <h2>这一步发生了什么</h2>
+        <div id="explain"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>总结：三种读异常在各隔离级别下是否会发生（InnoDB，普通 SELECT）</h2>
+    <table class="matrix">
+      <thead><tr><th>隔离级别</th><th>脏读</th><th>不可重复读</th><th>幻读（普通 SELECT）</th><th>普通 SELECT 读什么</th></tr></thead>
+      <tbody>
+        <tr><td>READ UNCOMMITTED</td><td>会</td><td>会</td><td>会</td><td>最新数据，包括别人没提交的</td></tr>
+        <tr><td>READ COMMITTED</td><td>不会</td><td>会</td><td>会</td><td>每条语句开始时已提交的数据（每次重新拍照）</td></tr>
+        <tr><td>REPEATABLE READ</td><td>不会</td><td>不会</td><td>不会</td><td>事务内第一次读时拍下的照片，整个事务一直用它</td></tr>
+        <tr><td>SERIALIZABLE</td><td>不会</td><td>不会</td><td>不会</td><td>关闭自动提交时，普通 SELECT 自动变成加共享锁的读</td></tr>
+      </tbody>
+    </table>
+    <p class="note">RR 一栏的“幻读不会”只针对普通 SELECT（快照读）。加锁读（FOR UPDATE）、UPDATE、DELETE 读的是最新数据（当前读），场景 ③ 展示了它们能看到别人新插入并提交的行；InnoDB 在 RR 下用间隙锁阻止“加锁读之后”再被插入，见专题 26。</p>
+  </div>
+</div>
+
+<script>
+// ---------- 场景定义 ----------
+// op: A_begin, A_upd(id,val,autocommit), A_ins(row,autocommit), A_commit, A_rollback,
+//     B_begin(mode), B_read(q, current), B_upd_ge500, B_commit, B_rollback
+const INIT = [{id:1,name:'A',bal:1000},{id:2,name:'B',bal:1000}];
+const Q = {
+  bal1:{sql:'SELECT balance FROM t_acct WHERE id = 1', f:rows=>{const r=rows.find(x=>x.id===1);return r?String(r.bal):'无'}},
+  cnt:{sql:'SELECT COUNT(*) FROM t_acct WHERE balance >= 500', f:rows=>String(rows.filter(x=>x.bal>=500).length)},
+  cntFU:{sql:'SELECT COUNT(*) FROM t_acct WHERE balance >= 500 FOR UPDATE', f:rows=>String(rows.filter(x=>x.bal>=500).length)},
+  all:{sql:'SELECT id, name, balance FROM t_acct', f:rows=>rows.map(x=>`(${x.id},${x.name},${x.bal})`).join(' ')}
+};
+const S = {
+  dirty:{title:'脏读：B 读到了 A 还没提交、后来又撤销的修改', steps:[
+    {op:'A_begin'},
+    {op:'A_upd', id:1, val:1500, sql:'UPDATE t_acct SET balance = balance + 500 WHERE id = 1'},
+    {op:'B_read', q:'bal1'},
+    {op:'A_rollback'},
+    {op:'B_read', q:'bal1'}
+  ]},
+  nonrep:{title:'不可重复读：同一事务里两次读同一行，结果不同', steps:[
+    {op:'B_begin'},
+    {op:'B_read', q:'bal1'},
+    {op:'A_upd', id:1, val:800, auto:true, sql:'UPDATE t_acct SET balance = 800 WHERE id = 1   -- 自动提交'},
+    {op:'B_read', q:'bal1'},
+    {op:'B_commit'},
+    {op:'B_read', q:'bal1'}
+  ]},
+  phantom:{title:'幻读：同一事务里两次按条件查，多出了一行', steps:[
+    {op:'B_begin'},
+    {op:'B_read', q:'cnt'},
+    {op:'A_ins', row:{id:3,name:'C',bal:600}, auto:true, sql:"INSERT INTO t_acct VALUES (3,'C',600)   -- 自动提交"},
+    {op:'B_read', q:'cnt'},
+    {op:'B_read', q:'cntFU', current:true},
+    {op:'B_read', q:'cnt'},
+    {op:'B_upd'},
+    {op:'B_read', q:'all'},
+    {op:'B_rollback'}
+  ]},
+  timing:{title:'快照在什么时候拍下：BEGIN 之后的第一次读，还是 START TRANSACTION 那一刻', steps:[
+    {op:'B_begin'},
+    {op:'A_upd', id:1, val:700, auto:true, sql:'UPDATE t_acct SET balance = 700 WHERE id = 1   -- 自动提交'},
+    {op:'B_read', q:'bal1'},
+    {op:'B_commit'}
+  ]}
+};
+
+// ---------- 状态 ----------
+let scen='dirty', level='RR', mode='begin', pos=0, timer=null;
+
+function simulate(upto){
+  const st={committed:INIT.map(r=>({...r})), pend:{}, pendIns:[], aTrx:false,
+            bTrx:false, snap:null, own:{}, ownSeen:new Set(), lastRead:{}, results:[], notes:[]};
+  const steps=S[scen].steps;
+  for(let i=0;i<upto;i++) st.results[i]=apply(st, steps[i], i);
+  return st;
+}
+const clone=a=>a.map(r=>({...r}));
+function viewFor(st, current){
+  // 返回 B 此刻能看到的行
+  let base;
+  if(current){ base=clone(st.committed); }
+  else if(level==='RU'){
+    base=clone(st.committed).map(r=> st.pend[r.id]!==undefined?{...r,bal:st.pend[r.id]}:r).concat(clone(st.pendIns));
+  } else if(level==='RC' || !st.bTrx){ base=clone(st.committed); }
+  else { if(!st.snap) st.snap=clone(st.committed); base=clone(st.snap); }
+  // 叠加 B 自己的修改
+  for(const id in st.own){
+    const o=st.own[id]; const k=base.findIndex(r=>r.id==id);
+    if(k>=0) base[k]={...base[k],bal:o.bal}; else base.push({...o});
+  }
+  return base.sort((x,y)=>x.id-y.id);
+}
+function apply(st, s, i){
+  const r={who:s.op[0], sql:'', badge:null, text:''};
+  const L={RU:'READ UNCOMMITTED',RC:'READ COMMITTED',RR:'REPEATABLE READ'}[level];
+  switch(s.op){
+    case 'A_begin': r.sql='BEGIN'; st.aTrx=true;
+      r.text='A 开启事务。之后 A 的修改在提交前只属于 A 自己。'; break;
+    case 'A_upd':
+      r.sql=s.sql;
+      if(s.auto){ st.committed.find(x=>x.id===s.id).bal=s.val;
+        r.text=`A 没有显式开启事务，这条 UPDATE 在自动提交模式下执行完立即提交：id=1 的已提交值变为 ${s.val}。`; }
+      else { st.pend[s.id]=s.val;
+        r.text=`A 把 id=1 改成 ${s.val}，但<b>还没有提交</b>。这个新值只存在于 A 的事务里（右表蓝色）。`; }
+      break;
+    case 'A_ins': r.sql=s.sql; st.committed.push({...s.row});
+      r.text='A 插入一行 C（余额 600），自动提交，已成为已提交数据。它满足条件 balance >= 500。'; break;
+    case 'A_rollback': r.sql='ROLLBACK'; st.pend={}; st.pendIns=[]; st.aTrx=false;
+      r.text='A 回滚：刚才的修改被撤销，id=1 的值从来没有“正式”变成 1500。'; break;
+    case 'A_commit': r.sql='COMMIT'; break;
+    case 'B_begin':
+      if(scen==='timing' && mode==='cs'){
+        r.sql='START TRANSACTION WITH CONSISTENT SNAPSHOT'; st.bTrx=true;
+        if(level==='RR'){ st.snap=clone(st.committed); r.badge=['r-info','立即拍下快照'];
+          r.text='在 RR 下，这条语句<b>立刻</b>拍下快照（相当于 BEGIN 后马上执行一次 SELECT）。之后别人提交的修改都不在照片里。'; }
+        else { r.badge=['r-warn','选项被忽略'];
+          r.text=`在 ${L} 下 WITH CONSISTENT SNAPSHOT 被忽略（手册：只有 RR 支持一致性快照，并产生一条警告），效果等同 BEGIN。`; }
+      } else { r.sql='BEGIN'; st.bTrx=true;
+        r.text = level==='RR' ? 'B 开启事务。注意：BEGIN 这一刻<b>还没有拍快照</b>，快照在事务里第一次普通 SELECT 时才拍下。'
+               : `B 开启事务。在 ${L} 下，普通 SELECT 不使用事务级快照，所以这一步对读没有影响。`; }
+      break;
+    case 'B_read': {
+      const q=Q[s.q]; r.sql=q.sql;
+      const hadSnap=!!st.snap;
+      const rows=viewFor(st, s.current); const val=q.f(rows); r.val=val;
+      const key=s.q==='cntFU'?'cnt':s.q; const prev=st.lastRead[key];
+      const dirty = level==='RU' && (Object.keys(st.pend).length>0) && s.q==='bal1' && st.pend[1]!==undefined;
+      if(dirty){ r.badge=['r-bad',`读到 ${val}：未提交的数据！`]; }
+      else if(prev!==undefined && prev.v!==val && prev.inTrx && st.bTrx){ r.badge=['r-warn',`读到 ${val}：和本事务上次（${prev.v}）不同`]; }
+      else r.badge=['r-ok',`读到 ${val}`];
+      // 解释
+      if(s.current){
+        r.text=`FOR UPDATE 是<b>当前读</b>：不看快照，直接读最新的已提交数据并加锁，所以看到了 C，结果为 ${val}。`+
+               (level==='RR'?'快照读和当前读在同一个事务里看到了不同的东西，这就是 RR 下“幻读”的真正含义。':'');
+      } else if(level==='RU'){
+        r.text = dirty ? `RU 下普通 SELECT 直接读最新值，<b>包括 A 没提交的修改</b>，于是读到 ${val}。如果 B 据此做了决定（比如允许取款），A 一回滚，这个依据就不存在了。`
+                       : `RU 下读最新值。A 已回滚，最新值回到 ${val}。B 上一次看到的 1500 从来没有真正存在过。`;
+      } else if(level==='RC' || !st.bTrx){
+        r.text = (!st.bTrx && level==='RR') ? `B 不在事务中，这条 SELECT 自己就是一个事务，读语句开始时已提交的数据：${val}。`
+               : `RC 下<b>每条 SELECT 都重新拍一张快照</b>，内容是此刻已提交的数据，所以读到 ${val}。`+(prev && prev.v!==val && prev.inTrx?' 同一事务里前后两次结果不同。':'');
+        if(scen==='dirty' && level==='RC') r.text='RC 下只读已提交的数据，A 未提交的 1500 不可见，读到 1000。';
+      } else {
+        r.text = !hadSnap ? `RR 下这是事务里第一次普通 SELECT，此刻<b>拍下快照</b>（右表青色列），读到 ${val}。`
+               : `RR 下沿用本事务的快照，读到 ${val}。`+(prev && prev.v===val?'别人之后提交的修改不在快照里，所以前后一致。':'');
+        if(Object.keys(st.own).length) r.text=`RR 下仍用快照，但 <b>B 自己修改过的行总是可见</b>：C 被 B 的 UPDATE 改过，于是出现在结果里：${val}。`;
+        if(scen==='timing' && !hadSnap) r.text=`RR + BEGIN：快照在这次读时才拍下，A 的修改已经提交，所以读到 ${val}。`;
+        if(scen==='timing' && hadSnap && mode==='cs') r.text=`快照是在 START TRANSACTION 那一刻拍的，A 的修改在那之后提交，不在照片里，读到 ${val}。`;
+      }
+      if(!s.current) st.lastRead[key]={v:val,inTrx:st.bTrx};
+      break; }
+    case 'B_upd': {
+      r.sql='UPDATE t_acct SET balance = balance + 1 WHERE balance >= 500';
+      const latest=viewFor(st,true); let n=0;
+      latest.forEach(x=>{ if(x.bal>=500){ st.own[x.id]={...x,bal:x.bal+1}; n++; } });
+      r.badge=['r-info',`${n} 行受影响`];
+      r.text = `UPDATE 也是<b>当前读</b>：按最新数据找满足条件的行，所以连 C 一起改了，共 ${n} 行。`+(level==='RR'?'这时 B 的普通 SELECT 里并没有 C，UPDATE 却改到了它。':'');
+      break; }
+    case 'B_commit': r.sql='COMMIT';
+      for(const id in st.own){ const k=st.committed.findIndex(x=>x.id==id); if(k>=0) st.committed[k]=st.own[id]; }
+      st.own={}; st.snap=null; st.bTrx=false; st.lastRead={};
+      r.text='B 提交，事务结束，快照随之丢弃。之后的读会看到最新的已提交数据。'; break;
+    case 'B_rollback': r.sql='ROLLBACK'; st.own={}; st.snap=null; st.bTrx=false; st.lastRead={};
+      r.text='B 回滚，撤销自己的修改，快照丢弃。'; break;
+  }
+  return r;
+}
+
+// ---------- 渲染 ----------
+const $=id=>document.getElementById(id);
+function render(){
+  document.querySelectorAll('[data-s]').forEach(b=>b.classList.toggle('on',b.dataset.s===scen));
+  document.querySelectorAll('[data-l]').forEach(b=>b.classList.toggle('on',b.dataset.l===level));
+  document.querySelectorAll('[data-m]').forEach(b=>b.classList.toggle('on',b.dataset.m===mode));
+  $('startBox').style.display = scen==='timing'?'flex':'none';
+  const steps=S[scen].steps;
+  // 计算全部结果用于显示文本（未来步骤只显示 SQL）
+  const full=simulate(steps.length); const st=simulate(pos);
+  let html='';
+  steps.forEach((s,i)=>{
+    const r=full.results[i]; const done=i<pos; const cur=i===pos-1;
+    const cell = `<span class="${r.who==='A'?'sqlA':'sqlB'}">${esc(r.sql)}</span>` +
+      (done && r.badge?`<br><span class="res ${r.badge[0]}">${esc(r.badge[1])}</span>`:'');
+    html+=`<tr class="${cur?'cur':''} ${!done?'future':''}"><td class="t">T${i+1}</td>`+
+      (r.who==='A'?`<td class="ca">${cell}</td><td class="cb"></td>`:`<td class="ca"></td><td class="cb">${cell}</td>`)+'</tr>';
+  });
+  $('tl').innerHTML=html;
+  // 数据库面板
+  const ids=new Set(); st.committed.forEach(r=>ids.add(r.id)); st.pendIns.forEach(r=>ids.add(r.id));
+  (st.snap||[]).forEach(r=>ids.add(r.id)); Object.keys(st.own).forEach(k=>ids.add(+k));
+  let db='';
+  [...ids].sort().forEach(id=>{
+    const c=st.committed.find(r=>r.id===id); const sn=st.snap?st.snap.find(r=>r.id===id):null;
+    const name=(c||sn||st.own[id]||{}).name;
+    db+=`<tr><td>${id}</td><td>${name}</td><td>${c?c.bal:'<span class="dash">—</span>'}</td>`+
+      `<td>${st.pend[id]!==undefined?`<span class="cell-pend">${st.pend[id]}</span>`:'<span class="dash">—</span>'}</td>`+
+      `<td>${st.snap?(sn?`<span class="cell-snap">${sn.bal}</span>`:'<span class="cell-snap">不存在</span>'):'<span class="dash">未拍</span>'}</td>`+
+      `<td>${st.own[id]?`<span class="cell-own">${st.own[id].bal}</span>`:'<span class="dash">—</span>'}</td></tr>`;
+  });
+  $('db').innerHTML=db;
+  $('explain').innerHTML = pos===0 ? `<b>${S[scen].title}</b><br>初始数据：A、B 两个账户各 1000。点“下一步”开始。`
+                                   : `<b>T${pos}</b>　${st.results[pos-1].text}`;
+  $('status').textContent=`第 ${pos} / ${steps.length} 步`;
+  $('bPrev').disabled=pos===0; $('bNext').disabled=pos===steps.length;
+}
+function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+function stop(){ if(timer){clearInterval(timer);timer=null;$('bPlay').textContent='自动播放';} }
+document.querySelectorAll('[data-s]').forEach(b=>b.onclick=()=>{stop();scen=b.dataset.s;pos=0;render();});
+document.querySelectorAll('[data-l]').forEach(b=>b.onclick=()=>{stop();level=b.dataset.l;pos=0;render();});
+document.querySelectorAll('[data-m]').forEach(b=>b.onclick=()=>{stop();mode=b.dataset.m;pos=0;render();});
+$('bNext').onclick=()=>{ if(pos<S[scen].steps.length){pos++;render();} };
+$('bPrev').onclick=()=>{ stop(); if(pos>0){pos--;render();} };
+$('bReset').onclick=()=>{ stop(); pos=0; render(); };
+$('bPlay').onclick=()=>{
+  if(timer){stop();return;}
+  if(pos>=S[scen].steps.length) pos=0;
+  $('bPlay').textContent='暂停';
+  timer=setInterval(()=>{ if(pos>=S[scen].steps.length){stop();return;} pos++; render(); },1600);
+};
+render();
+</script>
+</body>
+</html>

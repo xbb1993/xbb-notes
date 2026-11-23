@@ -80,38 +80,38 @@ C 诊断主线
 | 24 | [MVCC：完整可见性算法](./t24-mvcc) | ★ | B | ✅ |
 | 25 | [锁（上）：全局锁、表锁、元数据锁、行锁、意向锁](./t25-locks-overview) | ★ | B | ✅ |
 | 26 | [锁（下）：记录锁、间隙锁、临键锁、加锁规则与幻读](./t26-gap-nextkey-locks) | ★ | B | ✅ |
-| 27 | 锁诊断与死锁处理 | ★ | B/C | 🟨 |
+| 27 | [锁诊断与死锁处理](./t27-lock-diagnosis-deadlock) | ★ | B/C | ✅ |
 
 ### 模块六 · Buffer Pool、日志与崩溃恢复
 
 | # | 专题 | 级别 | 主线 | 状态 |
 |---|---|---|---|---|
-| 28 | Buffer Pool | ★ | A/B | ⬜ |
-| 29 | redo log 与 WAL | ★ | B | ⬜ |
-| 30 | Doublewrite Buffer | ☆ | B | ⬜ |
-| 31 | undo log 与 purge，长事务的危害 | ★ | B | ⬜ |
-| 32 | binlog、两阶段提交与三日志体系 | ★ | B | ⬜ |
-| 33 | 崩溃恢复完整流程 | ★ | B | ⬜ |
+| 28 | [Buffer Pool](./t28-30-bufferpool-redo-doublewrite) | ★ | A/B | ✅ |
+| 29 | [redo log 与 WAL](./t28-30-bufferpool-redo-doublewrite) | ★ | B | ✅ |
+| 30 | [Doublewrite Buffer](./t28-30-bufferpool-redo-doublewrite) | ☆ | B | ✅ |
+| 31 | [undo log 与 purge，长事务的危害](./t31-33-undo-binlog-recovery) | ★ | B | ✅ |
+| 32 | [binlog、两阶段提交与三日志体系](./t31-33-undo-binlog-recovery) | ★ | B | ✅ |
+| 33 | [崩溃恢复完整流程](./t31-33-undo-binlog-recovery) | ★ | B | ✅ |
 
 ### 模块七 · Schema 设计、DDL 与表结构
 
 | # | 专题 | 级别 | 主线 | 状态 |
 |---|---|---|---|---|
-| 34 | 数据类型选择与 schema 设计陷阱 | ☆ | A | ⬜ |
-| 35 | 范式与反范式、缓存表与汇总表 | ☆ | A | ⬜ |
-| 36 | Online DDL 与元数据锁 | ★ | B/C | ⬜ |
-| 37 | 分区表 | ☆ | A | ⬜ |
-| 38 | 视图、存储过程、触发器、事件、外键、自增 ID 与临时表 | ○ | A | ⬜ |
+| 34 | [数据类型选择与 schema 设计陷阱](./t34-35-types-normalization) | ☆ | A | ✅ |
+| 35 | [范式与反范式、缓存表与汇总表](./t34-35-types-normalization) | ☆ | A | ✅ |
+| 36 | [Online DDL 与元数据锁](./t36-38-online-ddl-partition-misc) | ★ | B/C | ✅ |
+| 37 | [分区表](./t36-38-online-ddl-partition-misc) | ☆ | A | ✅ |
+| 38 | [视图、存储过程、触发器、事件、外键、自增 ID 与临时表](./t36-38-online-ddl-partition-misc) | ○ | A | ✅ |
 
 ### 模块八 · 复制、高可用与备份
 
 | # | 专题 | 级别 | 主线 | 状态 |
 |---|---|---|---|---|
-| 39 | 复制原理 | ★ | B | ⬜ |
-| 40 | 复制一致性与延迟 | ★ | B/C | ⬜ |
-| 41 | 复制拓扑、管理与常见陷阱 | ☆ | B | ⬜ |
-| 42 | 高可用 | ★ | B | ⬜ |
-| 43 | 备份与恢复 | ☆ | B | ⬜ |
+| 39 | [复制原理](./t39-40-replication-lag) | ★ | B | ✅ |
+| 40 | [复制一致性与延迟](./t39-40-replication-lag) | ★ | B/C | ✅ |
+| 41 | 复制拓扑、管理与常见陷阱 | ☆ | B | 🟨 |
+| 42 | 高可用 | ★ | B | 🟨 |
+| 43 | 备份与恢复 | ☆ | B | 🟨 |
 
 ### 模块九 · 性能监控、诊断与容量规划（综合实战）
 

@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>两阶段提交与崩溃点</title>
+<style>
+:root{
+  --bg:#f7f7f5; --panel:#fff; --ink:#1f2328; --muted:#6a737d; --line:#d8dbe0;
+  --a:#0969da; --abg:#eef4ff; --ok:#1a7f37; --okbg:#dafbe1; --bad:#cf222e; --badbg:#ffebe9; --warn:#b26b00; --warnbg:#fff1d6;
+}
+@media (prefers-color-scheme: dark){
+  :root{ --bg:#16181d; --panel:#1f2329; --ink:#e6e8eb; --muted:#9aa3ad; --line:#353b45;
+    --a:#58a6ff; --abg:#17263b; --ok:#3fb950; --okbg:#12301c; --bad:#f85149; --badbg:#3d1618; --warn:#d29922; --warnbg:#3a2c0d; }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.6 -apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1100px;margin:0 auto;padding:16px}
+h1{font-size:20px;margin:4px 0 2px} h2{font-size:15px;margin:0 0 8px}
+.sub{color:var(--muted);margin:0 0 12px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:12px}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+button{font:inherit;padding:6px 10px;border-radius:6px;border:1px solid var(--line);background:var(--panel);color:var(--ink);cursor:pointer}
+button.on{background:var(--a);border-color:var(--a);color:#fff}
+.lbl{color:var(--muted);font-size:12px}
+.flow{display:flex;align-items:stretch;flex-wrap:wrap;gap:0;margin:8px 0}
+.step{flex:1;min-width:150px;border:2px solid var(--line);border-radius:8px;padding:8px;background:var(--panel);font-size:13px;transition:.3s}
+.step b{display:block;font-size:13px;margin-bottom:2px}
+.step.done{border-color:var(--ok);background:var(--okbg)}
+.crash{width:46px;display:flex;align-items:center;justify-content:center;cursor:pointer;flex-direction:column;font-size:11px;color:var(--muted);border-radius:6px}
+.crash:hover{background:var(--warnbg)}
+.crash.sel{background:var(--badbg);color:var(--bad);font-weight:700}
+.bolt{font-size:18px}
+.stores{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+@media (max-width:760px){.stores{grid-template-columns:1fr}.flow{flex-direction:column}.crash{width:auto;height:30px;flex-direction:row;gap:6px}}
+.store{border:1px solid var(--line);border-radius:8px;padding:8px}
+.store h3{margin:0 0 4px;font-size:13px}
+.store .v{font-family:ui-monospace,Consolas,monospace;font-size:12.5px}
+.yes{color:var(--ok);font-weight:600} .no{color:var(--bad);font-weight:600} .mid{color:var(--warn);font-weight:600}
+#verdict{font-size:15px;padding:10px;border-radius:8px}
+.v-ok{background:var(--okbg);border:1px solid var(--ok)} .v-bad{background:var(--badbg);border:1px solid var(--bad)} .v-warn{background:var(--warnbg);border:1px solid var(--warn)}
+.note{color:var(--muted);font-size:12px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>两阶段提交与崩溃点</h1>
+  <p class="sub">MySQL 专题 32、33 配套。一个事务提交时要写两份日志：InnoDB 的 redo log 和 Server 层的 binlog（复制与时间点恢复用它）。点两步之间的 <b>⚡</b>，假设 MySQL 在那一刻崩溃，看重启后主库数据和 binlog（也就是从库会收到的内容）是否一致。默认配置“双 1”：<code>innodb_flush_log_at_trx_commit=1</code>、<code>sync_binlog=1</code>。</p>
+
+  <div class="panel">
+    <div class="row"><span class="lbl">提交方式</span>
+      <button data-m="2pc">两阶段提交（MySQL 的做法）</button>
+      <button data-m="redo1">假设不用两阶段：先 redo 后 binlog</button>
+      <button data-m="bin1">假设不用两阶段：先 binlog 后 redo</button>
+    </div>
+    <div class="flow" id="flow"></div>
+    <p class="note">事务：<code>UPDATE t_acct SET balance = balance - 100 WHERE id = 1</code>（余额 1000 → 900）。点击任意 ⚡ 选择崩溃时刻。</p>
+  </div>
+
+  <div class="panel">
+    <h2>崩溃那一刻，磁盘上有什么</h2>
+    <div class="stores" id="stores"></div>
+  </div>
+  <div class="panel">
+    <h2>重启后怎么处理，结果是否一致</h2>
+    <div id="verdict"></div>
+  </div>
+</div>
+<script>
+const M={
+ '2pc':{steps:[
+   ['① 执行','写 undo；改 Buffer Pool 中的页；redo 记录进 log buffer'],
+   ['② redo prepare','redo 写入并刷盘，事务状态标记为 prepare（带 XID）'],
+   ['③ 写 binlog','binlog 写入并刷盘（sync_binlog=1），末尾是带同一 XID 的 Xid 事件'],
+   ['④ redo commit','在 redo 中把事务标记为 commit'],
+   ['⑤ 返回客户端','提交成功']],
+   at:[ // crash after step index k (0..4) ; state
+    {redo:'无（或只在 log buffer）',bin:'无',verdict:['ok','事务还没有 prepare：用 undo 回滚。主库 = 1000，binlog 中没有这个事务，从库也不会执行 → 一致。']},
+    {redo:'有，状态 prepare，XID=28',bin:'无',verdict:['ok','redo 中是 prepare 状态，去 binlog 里找 XID=28：找不到 → 回滚。主库 = 1000，binlog 没有 → 一致。']},
+    {redo:'有，状态 prepare，XID=28',bin:'有，Xid = 28',verdict:['ok','redo 中是 prepare 状态，binlog 里找到了 XID=28 → 提交。主库 = 900，binlog 有，从库会执行 → 一致。（客户端可能没收到成功的回复，但事务实际已生效）']},
+    {redo:'有，状态 commit',bin:'有，Xid = 28',verdict:['ok','redo 中已是 commit：直接按 redo 恢复。主库 = 900，binlog 有 → 一致。']},
+    {redo:'有，状态 commit',bin:'有，Xid = 28',verdict:['ok','已经返回成功，重启后按 redo 恢复为 900，binlog 有 → 一致。']}
+   ]},
+ 'redo1':{steps:[['① 执行','写 undo、改内存页'],['② 写 redo 并提交','redo 刷盘，事务在 InnoDB 中已提交'],['③ 写 binlog','binlog 写入并刷盘'],['④ 返回客户端','提交成功']],
+   at:[{redo:'无',bin:'无',verdict:['ok','未提交，回滚。主库 1000，binlog 无 → 一致。']},
+       {redo:'有，已提交',bin:'无',verdict:['bad','重启后 redo 中事务已提交 → 主库 = 900；但 binlog 里没有它 → 从库仍是 1000，用 binlog 做时间点恢复也会丢掉这笔 → <b>不一致</b>。']},
+       {redo:'有，已提交',bin:'有',verdict:['ok','两边都有 → 一致。']},
+       {redo:'有，已提交',bin:'有',verdict:['ok','一致。']}]},
+ 'bin1':{steps:[['① 执行','写 undo、改内存页'],['② 写 binlog','binlog 写入并刷盘'],['③ 写 redo 并提交','redo 刷盘'],['④ 返回客户端','提交成功']],
+   at:[{redo:'无',bin:'无',verdict:['ok','未写任何日志，回滚 → 一致。']},
+       {redo:'无',bin:'有',verdict:['bad','redo 中没有这个事务 → 主库回滚，仍是 1000；但 binlog 里有 → 从库执行后变成 900 → <b>不一致</b>。']},
+       {redo:'有，已提交',bin:'有',verdict:['ok','两边都有 → 一致。']},
+       {redo:'有，已提交',bin:'有',verdict:['ok','一致。']}]}
+};
+let mode='2pc', k=1;
+const $=id=>document.getElementById(id);
+function render(){
+  document.querySelectorAll('[data-m]').forEach(b=>b.classList.toggle('on',b.dataset.m===mode));
+  const d=M[mode]; if(k>=d.steps.length) k=d.steps.length-1;
+  let h='';
+  d.steps.forEach((s,i)=>{
+    h+=`<div class="step ${i<=k?'done':''}"><b>${s[0]}</b>${s[1]}</div>`;
+    if(i<d.steps.length-1) h+=`<div class="crash ${i===k?'sel':''}" data-k="${i}"><span class="bolt">⚡</span>崩溃</div>`;
+  });
+  $('flow').innerHTML=h;
+  document.querySelectorAll('[data-k]').forEach(e=>e.onclick=()=>{k=+e.dataset.k;render();});
+  const st=d.at[k];
+  const cls=v=> v.startsWith('无')?'no':(v.includes('prepare')?'mid':'yes');
+  $('stores').innerHTML=`<div class="store"><h3>redo log（InnoDB）</h3><div class="v ${cls(st.redo)}">${st.redo}</div></div>
+    <div class="store"><h3>binlog（Server 层）</h3><div class="v ${cls(st.bin)}">${st.bin}</div></div>
+    <div class="store"><h3>数据页</h3><div class="v">可能还是旧值 1000（脏页未写回），恢复时靠 redo 重做</div></div>`;
+  $('verdict').className = st.verdict[0]==='ok'?'v-ok':'v-bad';
+  $('verdict').innerHTML = st.verdict[1];
+}
+document.querySelectorAll('[data-m]').forEach(b=>b.onclick=()=>{mode=b.dataset.m;k=1;render();});
+render();
+</script>
+</body>
+</html>

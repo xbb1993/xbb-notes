@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>复制链路与半同步</title>
+<style>
+:root{
+  --bg:#f7f7f5; --panel:#fff; --ink:#1f2328; --muted:#6a737d; --line:#d8dbe0;
+  --a:#0969da; --abg:#eef4ff; --ok:#1a7f37; --okbg:#dafbe1; --bad:#cf222e; --badbg:#ffebe9; --warn:#b26b00; --warnbg:#fff1d6;
+}
+@media (prefers-color-scheme: dark){
+  :root{ --bg:#16181d; --panel:#1f2329; --ink:#e6e8eb; --muted:#9aa3ad; --line:#353b45;
+    --a:#58a6ff; --abg:#17263b; --ok:#3fb950; --okbg:#12301c; --bad:#f85149; --badbg:#3d1618; --warn:#d29922; --warnbg:#3a2c0d; }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.6 -apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1100px;margin:0 auto;padding:16px}
+h1{font-size:20px;margin:4px 0 2px} h2{font-size:15px;margin:0 0 8px}
+.sub{color:var(--muted);margin:0 0 12px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:12px}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+button{font:inherit;padding:6px 10px;border-radius:6px;border:1px solid var(--line);background:var(--panel);color:var(--ink);cursor:pointer}
+button.on{background:var(--a);border-color:var(--a);color:#fff}
+.lbl{color:var(--muted);font-size:12px}
+.topo{display:grid;grid-template-columns:1fr 70px 1fr;gap:8px;align-items:stretch;margin-top:10px}
+@media (max-width:760px){.topo{grid-template-columns:1fr}.net{min-height:40px}}
+.host{border:1px solid var(--line);border-radius:10px;padding:8px}
+.host h3{margin:0 0 6px;font-size:13px}
+.node{border:2px solid var(--line);border-radius:8px;padding:5px 8px;margin:5px 0;font-size:12.5px;transition:.25s}
+.node b{font-size:12.5px}
+.node.act{border-color:var(--a);background:var(--abg)}
+.node.done{border-color:var(--ok)}
+.net{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;font-size:11px;color:var(--muted);text-align:center}
+.pkt{padding:2px 6px;border-radius:10px;border:1px solid var(--line)}
+.pkt.act{background:var(--a);color:#fff;border-color:var(--a)}
+.pkt.ack{background:var(--ok);color:#fff;border-color:var(--ok)}
+.desc{margin:10px 0 0;padding:8px;border-left:4px solid var(--a);background:var(--abg);border-radius:4px}
+.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+@media (max-width:760px){.grid{grid-template-columns:1fr 1fr}}
+.cell{border:1px solid var(--line);border-radius:8px;padding:6px 8px}
+.cell .k{font-size:11.5px;color:var(--muted)}
+.cell .v{font-family:ui-monospace,Consolas,monospace;font-size:13px;font-weight:600}
+.yes{color:var(--ok)} .no{color:var(--bad)} .mid{color:var(--warn)}
+#verdict{padding:10px;border-radius:8px}
+.v-ok{background:var(--okbg);border:1px solid var(--ok)} .v-bad{background:var(--badbg);border:1px solid var(--bad)} .v-warn{background:var(--warnbg);border:1px solid var(--warn)}
+.note{color:var(--muted);font-size:12px}
+.prog{flex:1;min-width:160px;height:6px;background:var(--line);border-radius:3px;overflow:hidden}
+.prog i{display:block;height:100%;background:var(--a);transition:.25s}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>复制链路与半同步</h1>
+  <p class="sub">MySQL 专题 39、40、42 配套。一个事务 <code>UPDATE t_acct SET balance = balance - 100 WHERE id = 1</code>（1000 → 900，GTID 记为 <code>…:101</code>）从主库提交到从库生效的全过程。切换三种复制方式，逐步前进，看每一步：客户端是否已收到成功、主库其他会话看到什么、从库收到 / 执行到哪，以及<b>如果主库此刻宕机并切换到从库，这笔事务会不会丢</b>。</p>
+
+  <div class="panel">
+    <div class="row"><span class="lbl">复制方式</span>
+      <button data-m="async">异步（默认）</button>
+      <button data-m="sync">半同步 AFTER_SYNC（默认等待点）</button>
+      <button data-m="commit">半同步 AFTER_COMMIT</button>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <button id="prev">◀ 上一步</button><button id="next">下一步 ▶</button><button id="play">▶ 自动播放</button>
+      <div class="prog"><i id="bar"></i></div><span class="lbl" id="cnt"></span>
+    </div>
+
+    <div class="topo">
+      <div class="host"><h3>主库 source（server_id=1）</h3>
+        <div class="node" id="n-exec"><b>事务执行</b>：改 Buffer Pool 页，写 undo、redo（log buffer）</div>
+        <div class="node" id="n-prep"><b>redo prepare</b>（刷盘）</div>
+        <div class="node" id="n-bin"><b>binlog</b> 写入并刷盘（含 GTID）</div>
+        <div class="node" id="n-cmt"><b>redo commit</b>：事务在引擎内提交，其他会话可见</div>
+        <div class="node" id="n-ok"><b>返回客户端</b>“提交成功”</div>
+        <div class="node" id="n-dump"><b>Binlog Dump 线程</b>：读 binlog，推给从库</div>
+      </div>
+      <div class="net"><span class="pkt" id="p-ev">binlog event →</span><span class="pkt" id="p-ack">← ACK</span><span>网络</span></div>
+      <div class="host"><h3>从库 replica（server_id=2）</h3>
+        <div class="node" id="n-io"><b>接收线程</b>（replica_io）：收 event</div>
+        <div class="node" id="n-relay"><b>relay log</b>：写入本地中继日志 → Retrieved_Gtid_Set</div>
+        <div class="node" id="n-coord"><b>协调线程</b>（replica_sql）：读 relay log，按 last_committed 分发</div>
+        <div class="node" id="n-work"><b>worker 线程</b> ×4：回放并提交 → Executed_Gtid_Set</div>
+      </div>
+    </div>
+    <div class="desc" id="desc"></div>
+  </div>
+
+  <div class="panel">
+    <h2>此刻的状态</h2>
+    <div class="grid" id="grid"></div>
+  </div>
+  <div class="panel">
+    <h2>假如主库此刻宕机，切换到从库当新主库</h2>
+    <div id="verdict"></div>
+    <p class="note">半同步还有一个前提：主库等 ACK 最多 <code>rpl_semi_sync_source_timeout</code>（默认 10000 毫秒）。超时后自动退化为异步，此后的事务回到“异步”模式的风险，直到从库追上重新 ACK。沙箱实测：超时设 3000 毫秒时，第一笔提交耗时 3007 ms，随后状态变为 OFF，后续提交 7 ms。</p>
+  </div>
+</div>
+<script>
+// state: [nodes active, nodes done-through, packet, desc, client, srcOthers, srcBinlog, retrieved, executed, replicaRead, verdict]
+const OK='ok',BAD='bad',WARN='warn';
+const base=[
+ ['n-exec','执行 UPDATE：修改内存中的页，写 undo，redo 先进 log buffer。','等待中',1000,'无','否','否',1000,[OK,'事务尚未提交，什么日志都没落盘。客户端会收到连接错误，不会以为成功 → <b>不算丢</b>。']],
+ ['n-prep','两阶段提交第一步（专题 32）：redo 以 prepare 状态刷盘。','等待中',1000,'无','否','否',1000,[OK,'只有 prepare 的 redo，binlog 中没有 → 主库重启会回滚；从库也没有 → 一致，客户端未收到成功 → <b>不算丢</b>。']],
+ ['n-bin','binlog 写入并刷盘（sync_binlog=1），事务获得 GTID …:101。从这一刻起，Dump 线程就能读到它。','等待中',1000,'有 …:101','否','否',1000,null]
+];
+const M={
+ async:[...base,
+  ['n-cmt','redo commit：事务在 InnoDB 中真正提交，主库其他会话立刻能读到 900。','等待中',900,'有 …:101','否','否',1000,[BAD,'主库已提交、其他会话已看到 900，但从库还没收到 → 切换后新主库是 1000。客户端即将收到成功 → <b>已确认的数据丢失</b>（异步复制的根本风险）。']],
+  ['n-ok','异步复制：提交不等从库，直接返回成功。','已成功',900,'有 …:101','否','否',1000,[BAD,'客户端已收到“成功”，从库仍没有这笔 → 切换后<b>已确认的事务丢失</b>。']],
+  ['n-dump','Dump 线程把 event 发出去（与客户端无关，是后台推送）。','已成功',900,'有 …:101','否','否',1000,[BAD,'event 还在路上，从库未落盘 → 切换后<b>丢失</b>。'],'ev'],
+  ['n-io n-relay','接收线程收到 event，写入 relay log；Retrieved_Gtid_Set 包含 101。注意此时从库读到的仍是 1000：<b>收到 ≠ 执行</b>。','已成功',900,'有 …:101','是','否',1000,[OK,'从库 relay log 里已有 101。切换流程先让从库把 relay log 回放完再接管 → <b>不丢</b>。']],
+  ['n-coord','协调线程读 relay log，按 binlog 里的 last_committed / sequence_number 判断能否与其他事务并行，交给空闲 worker。','已成功',900,'有 …:101','是','否',1000,[OK,'同上，<b>不丢</b>。这段时间就是“复制延迟”，从库读请求在这里读到旧值。']],
+  ['n-work','worker 回放行变更并提交；Executed_Gtid_Set 包含 101，从库读到 900。','已成功',900,'有 …:101','是','是',900,[OK,'两边一致。']]
+ ],
+ sync:[...base,
+  ['n-dump','AFTER_SYNC：binlog 刷盘后<b>先不在引擎提交</b>，Dump 线程发送 event，提交线程等待从库 ACK。','等待中',1000,'有 …:101','否','否',1000,[WARN,'从库没收到；但事务未在引擎提交、其他会话从没看到 900、客户端也没收到成功 → 切换后这笔不存在，<b>没有人以为它成功过</b>。旧主库恢复后 binlog 里多出的 …:101 要丢弃或重建（专题 41/42）。'],'ev'],
+  ['n-io n-relay','从库接收线程把 event 写入 relay log 并刷盘，然后回 ACK。','等待中',1000,'有 …:101','是','否',1000,[OK,'从库 relay log 已有 101 → 切换后回放即可，<b>不丢</b>。'],'ack'],
+  ['n-cmt','收到 ACK 后主库才 redo commit，其他会话此时才看到 900。','等待中',900,'有 …:101','是','否',1000,[OK,'<b>不丢</b>。']],
+  ['n-ok','返回客户端成功。成功意味着：至少一个从库（wait_for_replica_count=1）已把它落到 relay log。','已成功',900,'有 …:101','是','否',1000,[OK,'<b>不丢</b>。注意：从库此刻仍读到 1000 —— 半同步保证的是“收到”，不是“执行完”，读写分离的旧读问题依然存在。']],
+  ['n-coord','协调线程分发。','已成功',900,'有 …:101','是','否',1000,[OK,'<b>不丢</b>。']],
+  ['n-work','worker 回放并提交，从库读到 900。','已成功',900,'有 …:101','是','是',900,[OK,'两边一致。']]
+ ],
+ commit:[...base,
+  ['n-cmt','AFTER_COMMIT：先在引擎提交（其他会话立刻看到 900），然后才等从库 ACK，客户端仍在等待。','等待中',900,'有 …:101','否','否',1000,[BAD,'主库其他会话<b>已经读到 900</b>，从库却没有 → 切换后变回 1000：别人看见过的数据“消失”了。这就是 AFTER_SYNC 取代它成为默认值的原因。']],
+  ['n-dump','Dump 线程发送 event，等待 ACK。','等待中',900,'有 …:101','否','否',1000,[BAD,'同上，已被读到的数据在切换后<b>丢失</b>。'],'ev'],
+  ['n-io n-relay','从库写 relay log，回 ACK。','等待中',900,'有 …:101','是','否',1000,[OK,'从库已收到 → <b>不丢</b>。'],'ack'],
+  ['n-ok','收到 ACK，返回客户端成功。','已成功',900,'有 …:101','是','否',1000,[OK,'<b>不丢</b>。']],
+  ['n-work','从库回放并提交。','已成功',900,'有 …:101','是','是',900,[OK,'两边一致。']]
+ ]
+};
+// binlog step verdict differs by mode
+const binV={async:[WARN,'binlog 已有 101，但从库还没收到。主库若只是重启：prepare + binlog 有 XID → 提交（专题 33）。若切换到从库：新主库没有这笔，但客户端尚未收到成功、其他会话也没看到 → <b>未确认的事务丢失</b>，旧主库回来后多出的 …:101 需要处理。'],
+            sync:[WARN,'同异步：从库没有，但没有任何人看到过它 → 切换后<b>未确认的事务丢失</b>，可接受。'],
+            commit:[WARN,'同异步：从库没有，但没有任何人看到过它 → 切换后<b>未确认的事务丢失</b>，可接受。']};
+let mode='async', k=0, timer=null;
+const $=id=>document.getElementById(id);
+const allNodes=['n-exec','n-prep','n-bin','n-cmt','n-ok','n-dump','n-io','n-relay','n-coord','n-work'];
+function render(){
+  document.querySelectorAll('[data-m]').forEach(b=>b.classList.toggle('on',b.dataset.m===mode));
+  const S=M[mode]; const st=S[k];
+  const done=new Set(); S.slice(0,k).forEach(s=>s[0].split(' ').forEach(n=>done.add(n)));
+  const act=st[0].split(' ');
+  allNodes.forEach(n=>{const e=$(n); e.classList.toggle('act',act.includes(n)); e.classList.toggle('done',done.has(n)&&!act.includes(n));});
+  $('p-ev').className='pkt'+(st[9]==='ev'?' act':''); $('p-ack').className='pkt'+(st[9]==='ack'?' ack':'');
+  $('desc').innerHTML=`<b>第 ${k+1} 步</b>：${st[1]}`;
+  const c=(v,good)=>`<span class="${v===good?'yes':(v==='等待中'||v===1000&&good===900?'mid':'no')}">${v}</span>`;
+  $('grid').innerHTML=`
+   <div class="cell"><div class="k">客户端</div><div class="v">${st[2]==='已成功'?'<span class="yes">已收到成功</span>':'<span class="mid">等待中</span>'}</div></div>
+   <div class="cell"><div class="k">主库其他会话读 id=1</div><div class="v">${st[3]===900?'<span class="yes">900</span>':'<span class="mid">1000</span>'}</div></div>
+   <div class="cell"><div class="k">主库 binlog</div><div class="v">${st[4]==='无'?'<span class="no">无</span>':'<span class="yes">'+st[4]+'</span>'}</div></div>
+   <div class="cell"><div class="k">从库 Retrieved（已收到）</div><div class="v">${st[5]==='是'?'<span class="yes">含 101</span>':'<span class="no">不含 101</span>'}</div></div>
+   <div class="cell"><div class="k">从库 Executed（已执行）</div><div class="v">${st[6]==='是'?'<span class="yes">含 101</span>':'<span class="no">不含 101</span>'}</div></div>
+   <div class="cell"><div class="k">从库读 id=1</div><div class="v">${st[7]===900?'<span class="yes">900</span>':'<span class="mid">1000（旧值）</span>'}</div></div>`;
+  const v = st[8] || binV[mode];
+  $('verdict').className = v[0]===OK?'v-ok':(v[0]===BAD?'v-bad':'v-warn');
+  $('verdict').innerHTML = v[1];
+  $('bar').style.width=((k+1)/S.length*100)+'%'; $('cnt').textContent=`${k+1} / ${S.length}`;
+}
+function stop(){ if(timer){clearInterval(timer);timer=null;$('play').textContent='▶ 自动播放';} }
+document.querySelectorAll('[data-m]').forEach(b=>b.onclick=()=>{stop();mode=b.dataset.m;k=0;render();});
+$('next').onclick=()=>{stop(); if(k<M[mode].length-1){k++;render();}};
+$('prev').onclick=()=>{stop(); if(k>0){k--;render();}};
+$('play').onclick=()=>{ if(timer){stop();return;} $('play').textContent='⏸ 暂停';
+  timer=setInterval(()=>{ if(k<M[mode].length-1){k++;render();} else stop(); },1800); };
+render();
+</script>
+</body>
+</html>

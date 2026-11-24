@@ -64,7 +64,8 @@ const mysqlSidebar = [
   group('mysql', '模块五 · 事务、MVCC 与锁', ['t23-transaction-isolation', 't24-mvcc', 't25-locks-overview', 't26-gap-nextkey-locks', 't27-lock-diagnosis-deadlock']),
   group('mysql', '模块六 · Buffer Pool、日志与崩溃恢复', ['t28-30-bufferpool-redo-doublewrite', 't31-33-undo-binlog-recovery']),
   group('mysql', '模块七 · Schema 设计、DDL 与表结构', ['t34-35-types-normalization', 't36-38-online-ddl-partition-misc']),
-  group('mysql', '模块八 · 复制、高可用与备份', ['t39-40-replication-lag']),
+  group('mysql', '模块八 · 复制、高可用与备份', ['t39-40-replication-lag', 't41-43-topology-ha-backup']),
+  group('mysql', '模块九 · 性能监控、诊断与容量规划', ['t44-47-ps-metrics-config-benchmark', 't48-50-hardware-capacity-drills']),
 ]
 
 const mqttSidebar = [

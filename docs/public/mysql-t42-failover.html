@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>主库故障切换流程</title>
+<style>
+:root{
+  --bg:#f7f7f5; --panel:#fff; --ink:#1f2328; --muted:#6a737d; --line:#d8dbe0;
+  --a:#0969da; --abg:#eef4ff; --ok:#1a7f37; --okbg:#dafbe1; --bad:#cf222e; --badbg:#ffebe9; --warn:#b26b00; --warnbg:#fff1d6;
+}
+@media (prefers-color-scheme: dark){
+  :root{ --bg:#16181d; --panel:#1f2329; --ink:#e6e8eb; --muted:#9aa3ad; --line:#353b45;
+    --a:#58a6ff; --abg:#17263b; --ok:#3fb950; --okbg:#12301c; --bad:#f85149; --badbg:#3d1618; --warn:#d29922; --warnbg:#3a2c0d; }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.6 -apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1100px;margin:0 auto;padding:16px}
+h1{font-size:20px;margin:4px 0 2px} h2{font-size:15px;margin:0 0 8px}
+.sub{color:var(--muted);margin:0 0 12px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:12px}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+button{font:inherit;padding:6px 10px;border-radius:6px;border:1px solid var(--line);background:var(--panel);color:var(--ink);cursor:pointer}
+button.on{background:var(--a);border-color:var(--a);color:#fff}
+.lbl{color:var(--muted);font-size:12px}
+.prog{flex:1;min-width:160px;height:6px;background:var(--line);border-radius:3px;overflow:hidden}
+.prog i{display:block;height:100%;background:var(--a);transition:.25s}
+.app{margin:12px auto 6px;max-width:420px;text-align:center;border:1px dashed var(--line);border-radius:8px;padding:6px;font-size:13px}
+.app b{color:var(--a)}
+.hosts{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+@media (max-width:760px){.hosts{grid-template-columns:1fr}}
+.host{border:2px solid var(--line);border-radius:10px;padding:8px;transition:.3s;min-height:150px}
+.host.primary{border-color:var(--a);background:var(--abg)}
+.host.down{opacity:.45;border-style:dashed}
+.host h3{margin:0;font-size:14px;display:flex;justify-content:space-between;align-items:center}
+.tag{font-size:11px;padding:1px 6px;border-radius:10px;border:1px solid var(--line);font-weight:400}
+.tag.p{background:var(--a);color:#fff;border-color:var(--a)}
+.tag.d{background:var(--bad);color:#fff;border-color:var(--bad)}
+.meta{font-size:12px;color:var(--muted);margin:4px 0}
+.chips{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px}
+.chip{font-family:ui-monospace,Consolas,monospace;font-size:12px;padding:2px 7px;border-radius:6px;border:1.5px solid var(--ok);background:var(--okbg);transition:.3s}
+.chip.relay{border-style:dashed;background:transparent;color:var(--warn);border-color:var(--warn)}
+.chip.div{border-color:var(--bad);background:var(--badbg);color:var(--bad);font-weight:700}
+.chip.new{box-shadow:0 0 0 3px var(--a)}
+.links{text-align:center;font-size:12.5px;color:var(--muted);margin:8px 0 0}
+.desc{margin:10px 0 0;padding:8px;border-left:4px solid var(--a);background:var(--abg);border-radius:4px}
+.desc code{font-size:12px}
+#verdict{padding:10px;border-radius:8px}
+.v-ok{background:var(--okbg);border:1px solid var(--ok)} .v-bad{background:var(--badbg);border:1px solid var(--bad)} .v-warn{background:var(--warnbg);border:1px solid var(--warn)} .v-info{background:var(--abg);border:1px solid var(--a)}
+.legend{font-size:12px;color:var(--muted);display:flex;gap:12px;flex-wrap:wrap;margin-top:8px}
+.legend .chip{font-size:11px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>主库故障切换流程</h1>
+  <p class="sub">MySQL 专题 42 配套，复用笔记中的真实实验：主库 SRC、从库 REP、从库 REP2；事务 A（id=200）、B（201）、C（202）、D（203，切换后写入新主库）、E（204，误写到旧主库）。切换两种配置对比：<b>实验原样</b>（异步复制，旧主库重启后可写）与<b>推荐配置</b>（半同步 AFTER_SYNC，所有节点以 super_read_only 启动）。</p>
+
+  <div class="panel">
+    <div class="row"><span class="lbl">配置</span>
+      <button data-m="async">异步 + 旧主重启可写（实验原样）</button>
+      <button data-m="safe">半同步 AFTER_SYNC + 全员只读启动（推荐）</button>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <button id="prev">◀ 上一步</button><button id="next">下一步 ▶</button><button id="play">▶ 自动播放</button>
+      <div class="prog"><i id="bar"></i></div><span class="lbl" id="cnt"></span>
+    </div>
+    <div class="app" id="app"></div>
+    <div class="hosts" id="hosts"></div>
+    <div class="links" id="links"></div>
+    <div class="legend"><span><span class="chip">A</span> 已执行</span><span><span class="chip relay">C</span> 仅在 relay log（已收到未执行）</span><span><span class="chip div">C</span> 分叉：只在这台上有</span><span><span class="chip new">D</span> 本步新出现</span></div>
+    <div class="desc" id="desc"></div>
+  </div>
+  <div class="panel">
+    <h2>这一步的结论</h2>
+    <div id="verdict"></div>
+  </div>
+</div>
+<script>
+// host state: [role, up, readOnly, executed[], relay[], divergent[]]
+const H=(role,up,ro,ex,rl=[],dv=[])=>({role,up,ro,ex,rl,dv});
+const S={
+ async:[
+  {d:'正常运行：SRC 是主库，REP、REP2 异步复制。事务 A 已到达两个从库。',app:'SRC',ok:['A'],l:'SRC → REP，SRC → REP2',
+   h:{src:H('主库',1,0,['A']),rep:H('从库',1,1,['A']),rep2:H('从库',1,1,['A'])},v:['info','三台数据一致。']},
+  {d:'REP2 的接收线程落后（实验中用 STOP REPLICA IO_THREAD 模拟）。事务 B 只到达 REP。',app:'SRC',ok:['A','B'],l:'SRC → REP，SRC ⇢ REP2（落后）',
+   h:{src:H('主库',1,0,['A','B']),rep:H('从库',1,1,['A','B']),rep2:H('从库',1,1,['A'])},nw:['B'],v:['info','从库进度不同是常态：网络、负载、回放速度都会造成差异。']},
+  {d:'事务 C：异步复制下主库提交后立即返回成功，此刻两个从库都还没收到。',app:'SRC',ok:['A','B','C'],l:'SRC ⇢ REP（还没发出），SRC ⇢ REP2',
+   h:{src:H('主库',1,0,['A','B','C']),rep:H('从库',1,1,['A','B']),rep2:H('从库',1,1,['A'])},nw:['C'],v:['warn','客户端已确认 C 成功，但它只存在于主库。这就是异步复制的风险窗口。']},
+  {d:'<b>① 发现</b>：主库进程被 kill -9。从库接收线程报 <code>Error connecting to source ... attempt 1/86400</code>。写入口不可用。',app:'—（不可写）',ok:['A','B','C'],l:'REP、REP2 重连中',
+   h:{src:H('宕机',0,0,['A','B','C']),rep:H('从库',1,1,['A','B']),rep2:H('从库',1,1,['A'])},v:['bad','服务中断，开始故障切换。']},
+  {d:'<b>② 选新主</b>：比较各从库已收到的集合（Retrieved / RECEIVED_TRANSACTION_SET）。REP = {A,B}，REP2 = {A} → 选 REP。',app:'—（不可写）',ok:['A','B','C'],l:'—',
+   h:{src:H('宕机',0,0,['A','B','C']),rep:H('候选新主',1,1,['A','B']),rep2:H('从库',1,1,['A'])},v:['warn','比较的是“已收到”而不是“已执行”：收到的部分可以在下一步执行完。C 不在任何从库上 → 注定丢失。']},
+  {d:'<b>③ 提升</b>：<code>WAIT_FOR_EXECUTED_GTID_SET(已收到的集合)</code> 返回 0 → <code>STOP REPLICA; RESET REPLICA ALL</code> → 关闭只读。写入口切到 REP，新事务 D 写入。',app:'REP',ok:['A','B','C','D'],l:'—',
+   h:{src:H('宕机',0,0,['A','B','C']),rep:H('主库',1,0,['A','B','D']),rep2:H('从库',1,1,['A'])},nw:['D'],v:['bad','客户端确认过的 C 在新主库上不存在：<b>已确认的事务丢失</b>。']},
+  {d:'<b>④ 调整拓扑</b>：REP2 执行 <code>CHANGE REPLICATION SOURCE TO ... SOURCE_PORT=3311, SOURCE_AUTO_POSITION=1</code>。GTID 自动补齐：REP2 缺 B 和 D，REP 补发。',app:'REP',ok:['A','B','C','D'],l:'REP → REP2',
+   h:{src:H('宕机',0,0,['A','B','C']),rep:H('主库',1,0,['A','B','D']),rep2:H('从库',1,1,['A','B','D'])},nw:['B','D'],v:['ok','REP2 从未直接收到 B，但改连新主后自动补上，无需位点换算 —— GTID 的价值。']},
+  {d:'<b>⑤ 旧主库重启</b>：<code>read_only=0, super_read_only=0</code>，应用的旧连接又写入了 E。系统里出现两个可写主库。',app:'REP（部分旧连接仍写 SRC）',ok:['A','B','C','D','E'],l:'REP → REP2；SRC 孤立且可写',
+   h:{src:H('旧主库（可写！）',1,0,['A','B','C','E'],[],['C','E']),rep:H('主库',1,0,['A','B','D']),rep2:H('从库',1,1,['A','B','D'])},nw:['E'],v:['bad','<b>脑裂</b>。<code>GTID_SUBTRACT(旧主, 新主) = SRC:36026-36027</code>，即 C 和 E 只在旧主库上。']},
+  {d:'<b>⑥ 处理旧主库</b>：若直接挂成 REP 的从库，复制状态两个 Yes，补上了 D，但 C、E 仍留在它上面。CHECKSUM：REP = REP2 = 471557010，旧主 = 1403696649。',app:'REP',ok:['A','B','C','D','E'],l:'REP → REP2，REP → SRC',
+   h:{src:H('从库（数据已分叉）',1,1,['A','B','C','D','E'],[],['C','E']),rep:H('主库',1,0,['A','B','D']),rep2:H('从库',1,1,['A','B','D'])},nw:['D'],v:['bad','复制只补缺、不删多余。正确做法：先从旧主 binlog 取出 C、E 人工核对是否补回新主，再用 Clone / 备份<b>重建</b>旧主库。']}
+ ],
+ safe:[
+  {d:'正常运行：SRC 是主库，REP、REP2 开启半同步（AFTER_SYNC，等 1 个 ACK）。所有节点配置文件中都是 super_read_only=ON，只在主库上由切换程序关闭。',app:'SRC',ok:['A'],l:'SRC → REP，SRC → REP2（半同步）',
+   h:{src:H('主库',1,0,['A']),rep:H('从库',1,1,['A']),rep2:H('从库',1,1,['A'])},v:['info','三台数据一致。']},
+  {d:'REP2 落后，事务 B 只到达 REP。REP 及时回了 ACK，所以 B 的提交没有受影响。',app:'SRC',ok:['A','B'],l:'SRC → REP，SRC ⇢ REP2（落后）',
+   h:{src:H('主库',1,0,['A','B']),rep:H('从库',1,1,['A','B']),rep2:H('从库',1,1,['A'])},nw:['B'],v:['info','半同步只需要 1 个 ACK，REP2 落后不影响主库提交。']},
+  {d:'事务 C：binlog 刷盘 → 等 ACK（此时引擎未提交，其他会话看不到 C）→ REP 把 C 写入 relay log 并回 ACK → 主库提交 → 返回成功。REP 还没来得及回放 C。',app:'SRC',ok:['A','B','C'],l:'SRC → REP（ACK），SRC ⇢ REP2',
+   h:{src:H('主库',1,0,['A','B','C']),rep:H('从库',1,1,['A','B'],['C']),rep2:H('从库',1,1,['A'])},nw:['C'],v:['ok','客户端收到成功时，C 已经在 REP 的 relay log 里（虚线）。']},
+  {d:'<b>① 发现</b>：主库宕机，写入口不可用。',app:'—（不可写）',ok:['A','B','C'],l:'REP、REP2 重连中',
+   h:{src:H('宕机',0,0,['A','B','C']),rep:H('从库',1,1,['A','B'],['C']),rep2:H('从库',1,1,['A'])},v:['warn','服务中断，开始故障切换。']},
+  {d:'<b>② 选新主</b>：REP 已收到 {A,B,C}，REP2 已收到 {A} → 选 REP。必须比较“已收到”：只看已执行会以为两者都缺 C。',app:'—（不可写）',ok:['A','B','C'],l:'—',
+   h:{src:H('宕机',0,0,['A','B','C']),rep:H('候选新主',1,1,['A','B'],['C']),rep2:H('从库',1,1,['A'])},v:['ok','半同步保证“至少一个从库收到”，选新主时必须选中那一个。']},
+  {d:'<b>③ 提升</b>：先等 REP 把 relay log 中的 C 回放完（<code>WAIT_FOR_EXECUTED_GTID_SET</code> 返回 0），再 <code>RESET REPLICA ALL</code>、关闭只读。写入口切到 REP，写入 D。',app:'REP',ok:['A','B','C','D'],l:'—',
+   h:{src:H('宕机',0,0,['A','B','C']),rep:H('主库',1,0,['A','B','C','D']),rep2:H('从库',1,1,['A'])},nw:['C','D'],v:['ok','所有确认过的事务（A、B、C）都在新主库上：<b>不丢</b>。']},
+  {d:'<b>④ 调整拓扑</b>：REP2 改连 REP，GTID 自动补齐 B、C、D。',app:'REP',ok:['A','B','C','D'],l:'REP → REP2',
+   h:{src:H('宕机',0,0,['A','B','C']),rep:H('主库',1,0,['A','B','C','D']),rep2:H('从库',1,1,['A','B','C','D'])},nw:['B','C','D'],v:['ok','REP、REP2 一致。']},
+  {d:'<b>⑤ 旧主库重启</b>：配置文件里 super_read_only=ON，应用旧连接写入 E 被拒：<code>ERROR 1290 ... --super-read-only</code>。',app:'REP',ok:['A','B','C','D'],l:'REP → REP2；SRC 只读',
+   h:{src:H('旧主库（只读）',1,1,['A','B','C']),rep:H('主库',1,0,['A','B','C','D']),rep2:H('从库',1,1,['A','B','C','D'])},v:['ok','没有脑裂。<code>GTID_SUBTRACT(旧主, 新主)</code> 为空：旧主库的数据是新主库的子集。']},
+  {d:'<b>⑥ 处理旧主库</b>：GTID_SUBTRACT 为空，可以直接挂为 REP 的从库，自动补上 D。',app:'REP',ok:['A','B','C','D'],l:'REP → REP2，REP → SRC',
+   h:{src:H('从库',1,1,['A','B','C','D']),rep:H('主库',1,0,['A','B','C','D']),rep2:H('从库',1,1,['A','B','C','D'])},nw:['D'],v:['ok','三台一致，切换完成。前提回顾：半同步处于 ON（未超时退化）、选新主比较 Retrieved、新主先回放完 relay log、所有节点只读启动。']}
+ ]
+};
+const NAMES={src:'SRC（3310）',rep:'REP（3311）',rep2:'REP2（3312）'};
+let mode='async',k=0,timer=null;
+const $=id=>document.getElementById(id);
+function render(){
+  document.querySelectorAll('[data-m]').forEach(b=>b.classList.toggle('on',b.dataset.m===mode));
+  const st=S[mode][k], nw=st.nw||[];
+  $('app').innerHTML=`应用写入口 → <b>${st.app}</b><br><span class="lbl">客户端已确认成功：${st.ok.join('、')}</span>`;
+  $('hosts').innerHTML=Object.keys(NAMES).map(id=>{
+    const h=st.h[id]; const isP=h.role==='主库'||h.role.startsWith('旧主库（可写');
+    const tag=!h.up?'<span class="tag d">宕机</span>':(isP?`<span class="tag p">${h.role}</span>`:`<span class="tag">${h.role}</span>`);
+    const chip=(t,c)=>`<span class="chip ${c} ${nw.includes(t)?'new':''}">${t}</span>`;
+    const chips=h.ex.map(t=>chip(t,h.dv.includes(t)?'div':'')).join('')+h.rl.map(t=>chip(t,'relay')).join('');
+    return `<div class="host ${isP&&h.up?'primary':''} ${h.up?'':'down'}"><h3>${NAMES[id]}${tag}</h3>
+      <div class="meta">${h.up?('super_read_only = '+(h.ro?'ON':'<b style="color:var(--bad)">OFF</b>')):'进程已退出'}</div>
+      <div class="chips">${chips}</div></div>`;
+  }).join('');
+  $('links').textContent='复制关系：'+st.l;
+  $('desc').innerHTML=`<b>第 ${k+1} 步</b>：${st.d}`;
+  $('verdict').className='v-'+st.v[0]; $('verdict').innerHTML=st.v[1];
+  $('bar').style.width=((k+1)/S[mode].length*100)+'%'; $('cnt').textContent=`${k+1} / ${S[mode].length}`;
+}
+function stop(){ if(timer){clearInterval(timer);timer=null;$('play').textContent='▶ 自动播放';} }
+document.querySelectorAll('[data-m]').forEach(b=>b.onclick=()=>{stop();mode=b.dataset.m;k=0;render();});
+$('next').onclick=()=>{stop(); if(k<S[mode].length-1){k++;render();}};
+$('prev').onclick=()=>{stop(); if(k>0){k--;render();}};
+$('play').onclick=()=>{ if(timer){stop();return;} $('play').textContent='⏸ 暂停';
+  timer=setInterval(()=>{ if(k<S[mode].length-1){k++;render();} else stop(); },2200); };
+render();
+</script>
+</body>
+</html>

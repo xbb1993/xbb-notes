@@ -66,6 +66,7 @@ const mysqlSidebar = [
   group('mysql', '模块七 · Schema 设计、DDL 与表结构', ['t34-35-types-normalization', 't36-38-online-ddl-partition-misc']),
   group('mysql', '模块八 · 复制、高可用与备份', ['t39-40-replication-lag', 't41-43-topology-ha-backup']),
   group('mysql', '模块九 · 性能监控、诊断与容量规划', ['t44-47-ps-metrics-config-benchmark', 't48-50-hardware-capacity-drills']),
+  group('mysql', '模块十 · 分布式与数据库架构', ['t51-53-scaling-sharding-cache', 't54-55-distributed-tx-cloud-upgrade']),
 ]
 
 const mqttSidebar = [

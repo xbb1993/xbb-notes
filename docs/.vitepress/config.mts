@@ -86,10 +86,15 @@ const mqttSidebar = [
   group('mqtt', '模块十二 · 架构与综合', ['t50-access-architecture', 't51-drill']),
 ]
 
+const influxdbSidebar = [
+  { text: '学习总览', items: [{ text: '路线图与目录', link: '/influxdb/' }] },
+  // 每完成一篇笔记，在这里用 group('influxdb', '模块名', ['slug', ...]) 追加一组
+]
+
 export default defineConfig({
   lang: 'zh-CN',
   title: "Engineer's Notes",
-  description: '后端技术学习笔记：Redis、MQTT、MySQL、系统架构师等',
+  description: '后端技术学习笔记：Redis、MQTT、MySQL、InfluxDB、系统架构师等',
   base: '/xbb-notes/',
   cleanUrls: true,
   lastUpdated: true,
@@ -98,6 +103,7 @@ export default defineConfig({
       { text: 'Redis', link: '/redis/' },
       { text: 'MQTT', link: '/mqtt/' },
       { text: 'MySQL', link: '/mysql/' },
+      { text: 'InfluxDB', link: '/influxdb/' },
       { text: '系统架构师', link: '/architect/' },
     ],
     sidebar: {
@@ -105,6 +111,7 @@ export default defineConfig({
       '/architect/': architectSidebar,
       '/mysql/': mysqlSidebar,
       '/mqtt/': mqttSidebar,
+      '/influxdb/': influxdbSidebar,
     },
     search: {
       provider: 'local',

@@ -21,14 +21,14 @@
 
 | # | 专题 | 级别 | 侧重 | 状态 |
 |---|---|---|---|---|
-| 1 | InfluxDB 全景、快速入门与全链路地图 | ☆ | 兼顾 | ⬜ |
+| 1 | [InfluxDB 全景、快速入门与全链路地图](./t01-overview) | ☆ | 兼顾 | ✅ |
 
 ### 模块二 · 数据模型
 
 | # | 专题 | 级别 | 侧重 | 状态 |
 |---|---|---|---|---|
-| 2 | 数据模型：measurement、tag、field、时间戳与 point | ★ | 通用原理 | ⬜ |
-| 3 | Series 与 series key：时间线为什么是核心单位 | ★ | 通用原理 | ⬜ |
+| 2 | [数据模型：measurement、tag、field、时间戳与 point](./t02-data-model) | ★ | 通用原理 | ✅ |
+| 3 | [Series 与 series key：时间线为什么是核心单位](./t03-series) | ★ | 通用原理 | ✅ |
 | 4 | Database、保留策略、Shard Group、Shard 的层次 | ★ | 通用原理 | ⬜ |
 | 5 | Line Protocol 详解：类型、转义、精度与重复点 | ★ | 兼顾 | ⬜ |
 | 6 | Schema 设计：tag 还是 field、宽表与窄表、常见反模式 | ★ | 实际应用 | ⬜ |

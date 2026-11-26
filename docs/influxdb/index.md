@@ -29,17 +29,17 @@
 |---|---|---|---|---|
 | 2 | [数据模型：measurement、tag、field、时间戳与 point](./t02-data-model) | ★ | 通用原理 | ✅ |
 | 3 | [Series 与 series key：时间线为什么是核心单位](./t03-series) | ★ | 通用原理 | ✅ |
-| 4 | Database、保留策略、Shard Group、Shard 的层次 | ★ | 通用原理 | ⬜ |
-| 5 | Line Protocol 详解：类型、转义、精度与重复点 | ★ | 兼顾 | ⬜ |
-| 6 | Schema 设计：tag 还是 field、宽表与窄表、常见反模式 | ★ | 实际应用 | ⬜ |
+| 4 | [Database、保留策略、Shard Group、Shard 的层次](./t04-rp-shard) | ★ | 通用原理 | ✅ |
+| 5 | [Line Protocol 详解：类型、转义、精度与重复点](./t05-line-protocol) | ★ | 兼顾 | ✅ |
+| 6 | [Schema 设计：tag 还是 field、宽表与窄表、常见反模式](./t06-schema-design) | ★ | 实际应用 | ✅ |
 
 ### 模块三 · 存储引擎 TSM
 
 | # | 专题 | 级别 | 侧重 | 状态 |
 |---|---|---|---|---|
 | 7 | 存储引擎的演进：从 LevelDB、BoltDB 到 TSM | ☆ | 通用原理 | ⬜ |
-| 8 | 写入路径：WAL 与 Cache | ★ | 通用原理 | ⬜ |
-| 9 | TSM 文件结构与读取 | ★ | 通用原理 | ⬜ |
+| 8 | [写入路径：WAL 与 Cache](./t08-wal-cache) | ★ | 通用原理 | ✅ |
+| 9 | [TSM 文件结构与读取](./t09-tsm-file) | ★ | 通用原理 | ✅ |
 | 10 | 压缩编码：时间戳、浮点、整数、布尔、字符串 | ☆ | 通用原理 | ⬜ |
 | 11 | Snapshot 与 Compaction | ★ | 通用原理 | ⬜ |
 | 12 | 删除与更新：tombstone、覆盖写与代价 | ★ | 兼顾 | ⬜ |

@@ -90,7 +90,8 @@ const influxdbSidebar = [
   { text: '学习总览', items: [{ text: '路线图与目录', link: '/influxdb/' }] },
   // 每完成一篇笔记，在这里用 group('influxdb', '模块名', ['slug', ...]) 追加一组
   group('influxdb', '模块一 · 全景与快速入门', ['t01-overview']),
-  group('influxdb', '模块二 · 数据模型', ['t02-data-model', 't03-series']),
+  group('influxdb', '模块二 · 数据模型', ['t02-data-model', 't03-series', 't04-rp-shard', 't05-line-protocol', 't06-schema-design']),
+  group('influxdb', '模块三 · 存储引擎 TSM', ['t08-wal-cache', 't09-tsm-file']),
 ]
 
 export default defineConfig({

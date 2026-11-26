@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>InfluxDB 1.x 快照与压实过程演示</title>
+<style>
+  :root { --bg:#f7f7f5; --card:#fff; --ink:#222; --muted:#666; --line:#ddd;
+          --c:#7a9cc6; --l1:#9fc5a8; --l2:#e3c27a; --l3:#d99a6c; --l4:#b57fb3; --hot:#e86a5a; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif; background:var(--bg); color:var(--ink); }
+  header { padding:16px 20px 4px; }
+  h1 { font-size:20px; margin:0 0 6px; }
+  .sub { color:var(--muted); font-size:13px; line-height:1.6; }
+  .wrap { display:grid; grid-template-columns: 1fr 320px; gap:16px; padding:12px 20px 20px; }
+  @media (max-width: 900px) { .wrap { grid-template-columns: 1fr; } }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px; }
+  .controls button { margin:0 6px 8px 0; padding:7px 12px; border:1px solid #bbb; border-radius:6px; background:#fff; cursor:pointer; font-size:13px; }
+  .controls button.primary { background:#2f5d8a; color:#fff; border-color:#2f5d8a; }
+  .controls button:disabled { opacity:.45; cursor:default; }
+  .layer { display:flex; align-items:center; min-height:58px; border-top:1px dashed var(--line); padding:8px 0; }
+  .layer:first-child { border-top:none; }
+  .lname { width:118px; flex:none; font-size:13px; color:var(--muted); line-height:1.4; }
+  .lname b { color:var(--ink); font-size:14px; }
+  .files { display:flex; flex-wrap:wrap; gap:6px; flex:1; }
+  .file { border-radius:6px; padding:4px 7px; font-size:11px; font-family:Consolas,monospace; color:#222;
+          border:1px solid rgba(0,0,0,.15); transition: transform .3s, opacity .3s; }
+  .file.new { animation: pop .6s ease; }
+  .file.merging { outline:2px solid var(--hot); }
+  @keyframes pop { 0%{transform:scale(.4);opacity:0} 100%{transform:scale(1);opacity:1} }
+  .cachebar { height:22px; background:#eee; border-radius:5px; overflow:hidden; flex:1; position:relative; }
+  .cachefill { height:100%; background:var(--c); width:0; transition: width .3s; }
+  .cachelabel { position:absolute; left:8px; top:2px; font-size:12px; }
+  .stats { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:10px; }
+  .stat { background:#fafafa; border:1px solid var(--line); border-radius:8px; padding:8px; }
+  .stat .v { font-size:20px; font-weight:600; }
+  .stat .k { font-size:12px; color:var(--muted); }
+  .log { font-size:12px; line-height:1.6; max-height:430px; overflow:auto; font-family:Consolas,monospace; }
+  .log div { border-bottom:1px solid #f0f0f0; padding:2px 0; }
+  .log .snap { color:#2f5d8a; } .log .lvl { color:#9a6b12; } .log .full { color:#8a3d86; font-weight:600; } .log .info { color:var(--muted); }
+  .rules { font-size:12.5px; line-height:1.7; color:#333; }
+  .rules code { background:#f1f1f1; padding:0 4px; border-radius:3px; }
+  .legend span { display:inline-block; width:12px; height:12px; border-radius:3px; margin:0 4px -2px 10px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>InfluxDB 1.x：一个 shard 内的快照与压实（逐层合并）</h1>
+  <div class="sub">
+    规则来自 1.13.2 源码 <code>tsdb/engine/tsm1/compact.go</code>、<code>engine.go</code>，为便于观察做了缩小比例的简化：
+    Cache 每满 4 格做一次快照；第 1 层凑满 <b>8</b> 个相邻文件合并成第 2 层；第 2、3 层凑满 <b>4</b> 个合并到下一层；
+    停止写入并"冷却"后做 full compaction。文件名为 <code>代号-序号</code>，序号 &lt; 4 时序号就是层级，否则算第 4 层。
+  </div>
+</header>
+<div class="wrap">
+  <div class="card">
+    <div class="controls">
+      <button class="primary" id="bWrite">写入一批</button>
+      <button id="bAuto">自动持续写入</button>
+      <button id="bFast">快进 32 批（不播放动画）</button>
+      <button id="bStop">停止写入（开始冷却）</button>
+      <button id="bReset">重置</button>
+    </div>
+    <div id="layers">
+      <div class="layer"><div class="lname"><b>Cache</b><br>内存层（+WAL）</div>
+        <div class="cachebar"><div class="cachefill" id="cache"></div><div class="cachelabel" id="cacheLabel">0 / 4</div></div></div>
+      <div class="layer"><div class="lname"><b>第 1 层</b><br>快照产物，序号 1</div><div class="files" id="L1"></div></div>
+      <div class="layer"><div class="lname"><b>第 2 层</b><br>8 个 L1 合并</div><div class="files" id="L2"></div></div>
+      <div class="layer"><div class="lname"><b>第 3 层</b><br>4 个 L2 合并</div><div class="files" id="L3"></div></div>
+      <div class="layer"><div class="lname"><b>第 4 层</b><br>4 个 L3 合并 / 序号≥4</div><div class="files" id="L4"></div></div>
+    </div>
+    <div class="stats">
+      <div class="stat"><div class="v" id="sFiles">0</div><div class="k">TSM 文件数 = 读一列时最多要查找、合并的文件数</div></div>
+      <div class="stat"><div class="v" id="sBytes">0</div><div class="k">文件总大小（格；合并越多压缩越好，略有缩小）</div></div>
+      <div class="stat"><div class="v" id="sSnap">0</div><div class="k">快照次数</div></div>
+      <div class="stat"><div class="v" id="sComp">0</div><div class="k">压实次数（每次都要读旧文件、写新文件：消耗 CPU 和磁盘 IO）</div></div>
+    </div>
+    <div class="legend" style="margin-top:10px;font-size:12px;color:#666">
+      颜色：<span style="background:var(--l1)"></span>第1层<span style="background:var(--l2)"></span>第2层<span style="background:var(--l3)"></span>第3层<span style="background:var(--l4)"></span>第4层<span style="background:transparent;outline:2px solid var(--hot)"></span>正在被合并
+    </div>
+  </div>
+  <div class="card">
+    <div class="rules">
+      <b>看点</b><br>
+      ① 写入只进 Cache（顺序写，快）；满了就快照成一个第 1 层小文件。<br>
+      ② 小文件越积越多，读一列时要查找、合并的地方也越多（读放大）。<br>
+      ③ 压实把相邻的同层文件合并成更大的下一层文件：文件变少、块更满、压缩更好，但要消耗 CPU 和磁盘 IO（写放大）。<br>
+      ④ 停止写入后，shard 变冷，full compaction 把剩下的文件合并成很少几个。<br>
+      ⑤ 实测（云端 1.6.7）：28 次快照 → 3 次"8 合 1" → 冷却后把 7 个文件合并为 1 个；m1 全天 kwh 的解压块数从 10 降到 6。
+    </div>
+    <hr style="border:none;border-top:1px solid #eee">
+    <div class="log" id="log"></div>
+  </div>
+</div>
+<script>
+(function () {
+  var CACHE_MAX = 4, COLD_TICKS = 3;
+  var S;
+  function reset() {
+    S = { cache:0, files:[], gen:0, snaps:0, comps:0, idle:0, writing:false, auto:null, fullDone:false };
+    document.getElementById('log').innerHTML = '';
+    log('info', '初始：空 shard。点击"写入一批"或"自动持续写入"。');
+    render([]);
+  }
+  function level(f) { return f.seq < 4 ? f.seq : 4; }
+  function name(f) { return pad(f.gen) + '-' + pad(f.seq); }
+  function pad(n) { var s = String(n); while (s.length < 3) s = '0' + s; return s; }
+  function log(cls, msg) {
+    var d = document.createElement('div'); d.className = cls; d.textContent = msg;
+    var el = document.getElementById('log'); el.insertBefore(d, el.firstChild);
+  }
+  function color(l) { return ['', 'var(--l1)', 'var(--l2)', 'var(--l3)', 'var(--l4)'][l]; }
+  function render(newIds, merging) {
+    merging = merging || [];
+    for (var l = 1; l <= 4; l++) document.getElementById('L' + l).innerHTML = '';
+    var total = 0;
+    S.files.slice().sort(function (a, b) { return a.gen - b.gen; }).forEach(function (f) {
+      var d = document.createElement('div');
+      d.className = 'file' + (newIds.indexOf(f.id) >= 0 ? ' new' : '') + (merging.indexOf(f.id) >= 0 ? ' merging' : '');
+      d.style.background = color(level(f));
+      d.textContent = name(f) + '.tsm';
+      d.title = '大小约 ' + f.size.toFixed(1) + ' 格';
+      document.getElementById('L' + level(f)).appendChild(d);
+      total += f.size;
+    });
+    document.getElementById('cache').style.width = (S.cache / CACHE_MAX * 100) + '%';
+    document.getElementById('cacheLabel').textContent = S.cache + ' / ' + CACHE_MAX + (S.writing ? '' : '');
+    document.getElementById('sFiles').textContent = S.files.length;
+    document.getElementById('sBytes').textContent = total.toFixed(1);
+    document.getElementById('sSnap').textContent = S.snaps;
+    document.getElementById('sComp').textContent = S.comps;
+  }
+  var nextId = 1;
+  function snapshot() {
+    S.gen++; S.snaps++;
+    var f = { id: nextId++, gen: S.gen, seq: 1, size: S.cache };
+    S.files.push(f); S.cache = 0;
+    log('snap', '快照：Cache → ' + name(f) + '.tsm（第 1 层），WAL 已关闭的分段被删除');
+    return f;
+  }
+  // 与源码一致的简化规划：把按代号排序后相邻、同层的文件分组，L1 满 8 个、L2/L3 满 4 个就合并
+  function planLevel() {
+    var sorted = S.files.slice().sort(function (a, b) { return a.gen - b.gen; });
+    for (var L = 1; L <= 3; L++) {
+      var need = (L === 1) ? 8 : 4, run = [];
+      for (var i = 0; i < sorted.length; i++) {
+        if (level(sorted[i]) === L) { run.push(sorted[i]); if (run.length === need) return run; }
+        else run = [];
+      }
+    }
+    return null;
+  }
+  function merge(group, full) {
+    var maxGen = 0, maxSeq = 0, size = 0;
+    group.forEach(function (f) {
+      size += f.size;
+      if (f.gen > maxGen) { maxGen = f.gen; maxSeq = f.seq; }
+      else if (f.gen === maxGen && f.seq > maxSeq) maxSeq = f.seq;
+    });
+    var nf = { id: nextId++, gen: maxGen, seq: maxSeq + 1, size: size * 0.92 };
+    S.files = S.files.filter(function (f) { return group.indexOf(f) < 0; });
+    S.files.push(nf); S.comps++;
+    var names = group.map(name).join(' + ');
+    if (full) log('full', 'full compaction（shard 已冷）：' + group.length + ' 个文件 → ' + name(nf) + '.tsm');
+    else log('lvl', '第 ' + level(group[0]) + ' 层压实：' + group.length + ' 个 → ' + name(nf) + '.tsm（第 ' + level(nf) + ' 层）');
+    return nf;
+  }
+  function stepCompactions(cb) {
+    var g = planLevel();
+    if (!g) { cb(); return; }
+    render([], g.map(function (f) { return f.id; }));
+    setTimeout(function () { var nf = merge(g, false); render([nf.id]); setTimeout(function () { stepCompactions(cb); }, 450); }, 550);
+  }
+  var busy = false;
+  function writeBatch(cb) {
+    if (busy) return; busy = true;
+    S.writing = true; S.idle = 0; S.fullDone = false;
+    S.cache++;
+    log('info', '写入一批：进入 Cache（并追加到 WAL）');
+    render([]);
+    if (S.cache >= CACHE_MAX) {
+      setTimeout(function () {
+        var f = snapshot(); render([f.id]);
+        setTimeout(function () { stepCompactions(function () { busy = false; if (cb) cb(); }); }, 450);
+      }, 350);
+    } else { busy = false; if (cb) cb(); }
+  }
+  function cool() {
+    stopAuto();
+    S.writing = false;
+    if (S.cache > 0) { var f = snapshot(); render([f.id]); log('info', '冷却：超过冷写入时长，Cache 中剩余数据也被快照'); }
+    var t = 0;
+    var timer = setInterval(function () {
+      t++;
+      if (t < COLD_TICKS) { log('info', '冷却中……（对应 compact-full-write-cold-duration，默认 4h）'); return; }
+      clearInterval(timer);
+      if (S.files.length > 1 && !S.fullDone) {
+        var all = S.files.slice();
+        render([], all.map(function (f) { return f.id; }));
+        setTimeout(function () { var nf = merge(all, true); S.fullDone = true; render([nf.id]);
+          log('info', '结果：读一列只需查 1 个文件；块被重新打包得更满'); }, 700);
+      } else log('info', '文件已经只有 1 个，无需 full compaction');
+    }, 700);
+  }
+  function startAuto() {
+    if (S.auto) return;
+    document.getElementById('bAuto').disabled = true;
+    S.auto = setInterval(function () { if (!busy) writeBatch(); }, 700);
+  }
+  function stopAuto() {
+    if (S.auto) { clearInterval(S.auto); S.auto = null; }
+    document.getElementById('bAuto').disabled = false;
+  }
+  document.getElementById('bWrite').onclick = function () { writeBatch(); };
+  document.getElementById('bAuto').onclick = startAuto;
+  document.getElementById('bFast').onclick = function () {
+    if (busy) return; stopAuto(); S.writing = true; S.fullDone = false;
+    var before = S.comps;
+    for (var i = 0; i < 32; i++) {
+      S.cache++;
+      if (S.cache >= CACHE_MAX) { snapshot(); var g; while ((g = planLevel())) merge(g, false); }
+    }
+    log('info', '快进：写入 32 批，期间压实 ' + (S.comps - before) + ' 次');
+    render([]);
+  };
+  document.getElementById('bStop').onclick = cool;
+  document.getElementById('bReset').onclick = function () { stopAuto(); busy = false; reset(); };
+  reset();
+})();
+</script>
+</body>
+</html>
